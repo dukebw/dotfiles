@@ -1,0 +1,5 @@
+# X11 forwarding for Coder workspaces
+# Add this BEFORE the Coder-managed section in ~/.ssh/config
+Host *.coder coder.*
+	ForwardX11 yes
+	ForwardX11Trusted yes
