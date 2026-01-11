@@ -39,6 +39,7 @@ cd ~/dotfiles && ./install.sh
 - `zsh/.zshrc` - shell configuration
 - `git/.gitconfig` - git with delta integration
 - `zellij/config.kdl` - zellij terminal multiplexer
+- `opencode/opencode.json` - OpenCode config
 - `ssh/config.template` - X11 forwarding for Coder
 
 ## Manual Steps After Install

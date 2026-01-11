@@ -1,0 +1,14 @@
+{
+  "model": "openai/gpt-5.2-codex",
+  "$schema": "https://opencode.ai/config.json",
+  "permission": "allow",
+  "keybinds": {
+    "leader": "ctrl+x",
+    "messages_half_page_up": "ctrl+u",
+    "messages_half_page_down": "ctrl+d",
+    "messages_first": "<leader>g",
+    "messages_last": "<leader>shift+g",
+    "session_parent": "<leader>p",
+    "session_child_cycle": "<leader>right"
+  }
+}
