@@ -10,5 +10,14 @@
     "messages_last": "<leader>shift+g",
     "session_parent": "<leader>p",
     "session_child_cycle": "<leader>right"
+  },
+  "lsp": {
+    "pyright": {
+      "disabled": true
+    },
+    "ty": {
+      "command": ["ty", "server"],
+      "extensions": [".py", ".pyi"]
+    }
   }
 }
