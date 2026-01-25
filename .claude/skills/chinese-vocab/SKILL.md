@@ -1,3 +1,10 @@
+---
+name: chinese-vocab
+description: 從 Zoom 聊天記錄或詞彙列表建立中文詞彙填空卡片 (Cloze cards)。Use when the user wants to create Anki flashcards from Chinese vocabulary lists or chat logs.
+argument-hint: "[vocab-file] [--dry-run]"
+disable-model-invocation: true
+---
+
 # 中文詞彙 Anki 卡片製作器
 
 從 Zoom 聊天記錄或詞彙列表建立中文詞彙填空卡片 (Cloze cards)。

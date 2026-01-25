@@ -58,6 +58,14 @@ backup_and_link "$DOTFILES_DIR/zellij/config.kdl" "$HOME/.config/zellij/config.k
 mkdir -p "$HOME/.config/opencode"
 backup_and_link "$DOTFILES_DIR/opencode/opencode.json" "$HOME/.config/opencode/opencode.json"
 
+mkdir -p "$HOME/.claude/skills"
+for skill_dir in "$DOTFILES_DIR/.claude/skills"/*; do
+    if [ -d "$skill_dir" ]; then
+        skill_name=$(basename "$skill_dir")
+        backup_and_link "$skill_dir" "$HOME/.claude/skills/$skill_name"
+    fi
+done
+
 # ------------------------------------------------------------------------------
 # SSH config (append X11 forwarding if not present)
 # ------------------------------------------------------------------------------
