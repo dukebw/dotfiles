@@ -17,7 +17,7 @@ Set up a local editing + remote build/execution workflow using Mutagen file sync
 │   Local MacBook     │ ◄───────────────────────────►│  Coder Workspace    │
 │                     │      (one-way-replica)       │                     │
 │ ~/work/modular      │                              │ ~/work/modular      │
-│ - neovim (local)    │                              │ - ./bazel build     │
+│ - neovim (local)    │                              │ - ./bazelw build    │
 │ - AI agent (local)  │                              │ - GPU execution     │
 │ - git (local)       │                              │ - nvitop monitoring │
 └─────────────────────┘                              └─────────────────────┘
@@ -143,8 +143,8 @@ chmod +x ~/.local/bin/<helper-name>
 
 Usage:
 ```bash
-<helper-name> ./bazel build //path:target
-<helper-name> ./bazel test //...
+<helper-name> ./bazelw build //path:target
+<helper-name> ./bazelw test //...
 <helper-name> python3 script.py
 ```
 
