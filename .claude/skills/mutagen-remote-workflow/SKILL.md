@@ -1,6 +1,6 @@
 ---
 name: mutagen-remote-workflow
-description: Set up local editing + remote build workflow using Mutagen file sync with Coder workspaces. Includes the `hydra` helper script for running commands on remote machines. Use when the user mentions hydra, mutagen, remote builds, Coder workspaces, or syncing files to a remote GPU server.
+description: Set up local editing + remote build workflow using Mutagen file sync with Coder workspaces. Includes the `rexec` helper script for running commands on remote machines. Use when the user mentions rexec, mutagen, remote builds, Coder workspaces, or syncing files to a remote GPU server.
 ---
 
 # Mutagen Remote Workflow Setup
@@ -23,6 +23,24 @@ Set up a local editing + remote build/execution workflow using Mutagen file sync
 └─────────────────────┘                              └─────────────────────┘
 ```
 
+## Quick Start (TL;DR)
+
+```bash
+# In ~/work/modular
+mutagen project start          # Start sync from mutagen.yml
+./r ./bazelw build //path:target  # Run command remotely (flushes first)
+rexec hostname                 # Run command remotely (no flush)
+```
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `~/work/modular/mutagen.yml` | Declarative Mutagen sync config |
+| `~/.local/bin/rexec` | Remote execution helper (Python) |
+| `~/work/modular/r` | Wrapper: flush + rexec |
+| `~/.ssh/config` | SSH multiplexing config |
+
 ## Prerequisites
 
 - macOS with Homebrew
@@ -39,262 +57,142 @@ brew install mutagen-io/mutagen/mutagen
 mutagen version  # Verify: should show 0.18.x or higher
 ```
 
-### 2. Align Git State
+### 2. SSH Multiplexing (speeds up repeated commands)
 
-Before creating Mutagen session, ensure both sides are on the same commit:
+Add to `~/.ssh/config`:
 
-```bash
-# Check local
-cd ~/work/<repo>
-git status && git log -1 --oneline
+```sshconfig
+Host *.coder coder.*
+    # Speed: connection multiplexing
+    ControlMaster auto
+    ControlPath ~/.ssh/cm/%C
+    ControlPersist 10m
 
-# Check remote
-ssh <workspace>.coder "cd ~/work/<repo> && git status && git log -1 --oneline"
+    # Reliability
+    ServerAliveInterval 60
+    ServerAliveCountMax 10
+    TCPKeepAlive yes
+
+    # Don't pay X11 tax for every short command
+    ForwardX11 no
+    ForwardX11Trusted no
+
+    StrictHostKeyChecking no
+    ConnectTimeout 0
 ```
 
-If they differ:
-- Commit/push remote changes first
-- Then `git fetch && git reset --hard origin/<branch>` locally
-
-### 3. Create Mutagen Sync Session
-
-**Key flags explained:**
-- `--sync-mode=one-way-replica`: Local is source of truth, remote mirrors it
-- `--symlink-mode=posix-raw`: Preserves symlinks between macOS ↔ Linux
-- `--ignore`: Exclude build artifacts to avoid syncing gigabytes of churn
-
+Create socket directory:
 ```bash
-mutagen sync create \
-  --name=<session-name> \
-  --sync-mode=one-way-replica \
-  --symlink-mode=posix-raw \
-  --default-file-mode=0644 \
-  --default-directory-mode=0755 \
-  --ignore="/.derived" \
-  --ignore="/bazel-*" \
-  --ignore="**/__pycache__" \
-  --ignore="**/.pytest_cache" \
-  --ignore="**/.mypy_cache" \
-  --ignore="/external" \
-  --ignore="**/*.pyc" \
-  --ignore="/.git" \
-  --ignore="**/.venv" \
-  --ignore="**/*.venv" \
-  ~/work/<repo> \
-  <workspace>.coder:/home/ubuntu/work/<repo>
+mkdir -p ~/.ssh/cm
 ```
 
-**Common ignores for Bazel repos:**
-| Pattern | Purpose |
-|---------|---------|
-| `/.derived` | Bazel build outputs |
-| `/bazel-*` | Bazel symlinks (bazel-bin, bazel-out, etc.) |
-| `/external` | Bazel external dependencies |
-| `**/__pycache__` | Python bytecode |
-| `**/*.venv` | Python venvs (including `.foo+bar.venv` patterns) |
-| `/.git` | Git dir (each side manages its own) |
-
-### 4. Verify Sync
-
+Test (second command should be <0.5s):
 ```bash
-mutagen sync list                           # List all sessions
-mutagen sync monitor <session-name>         # Real-time monitoring
-mutagen sync list --long <session-name>     # Check for conflicts
+time ssh b200-hydra.coder hostname  # ~2s first time
+time ssh b200-hydra.coder hostname  # <0.5s with multiplexing
 ```
 
-Healthy state shows: `Status: Watching for changes`
+### 3. Mutagen Project Config
 
-### 5. Handle Conflicts
+Create `~/work/modular/mutagen.yml` (gitignored):
 
-Conflicts occur when remote has files not on local (typically build artifacts):
+```yaml
+sync:
+  defaults:
+    mode: one-way-replica
+    flushOnCreate: true
 
-```bash
-# Option 1: Reset (rescans both sides)
-mutagen sync reset <session-name>
+    symlink:
+      mode: posix-raw
 
-# Option 2: Clean remote manually, then flush
-ssh <workspace>.coder "rm -rf /path/to/conflict"
-mutagen sync flush <session-name>
+    permissions:
+      defaultFileMode: "0644"
+      defaultDirectoryMode: "0755"
 
-# Clean all __pycache__ on remote
-ssh <workspace>.coder "find ~/work/<repo> -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null"
+    ignore:
+      vcs: true
+      paths:
+        - "/.derived"
+        - "/bazel-*"
+        - "/external"
+        - "**/__pycache__"
+        - "**/.pytest_cache"
+        - "**/.mypy_cache"
+        - "**/*.pyc"
+        - "**/.venv"
+        - "**/*.venv"
+        - ".DS_Store"
+
+  modular:
+    alpha: "/Users/bduke/work/modular"
+    beta: "b200-hydra.coder:/home/ubuntu/work/modular"
 ```
 
-### 6. Create Remote Command Helper
-
-Create `~/.local/bin/hydra` (or your preferred name):
-
+Start the sync:
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Smart helper script to run commands on remote Coder workspaces
-# Auto-detects which worktree you're in and routes to the mapped remote
-#
-# Usage: hydra [--remote <host>] <command>
-
-# Default remote if no mapping found
-DEFAULT_REMOTE="b200-hydra.coder"
-
-# Remote working directory
-REMOTE_WORKDIR="/home/ubuntu/work/modular"
-
-# Worktree → Remote mapping function
-# Edit this function to add new worktree mappings
-get_remote_for_worktree() {
-    local worktree="$1"
-    case "$worktree" in
-        "$HOME/work/modular")
-            echo "b200-hydra.coder"
-            ;;
-        # Add more mappings as needed:
-        # "$HOME/work/modular-feature-x")
-        #     echo "gcore-h100.coder"
-        #     ;;
-        *)
-            echo ""
-            ;;
-    esac
-}
-
-show_help() {
-    echo "Usage: hydra [--remote <host>] <command>"
-    echo ""
-    echo "Options:"
-    echo "  --remote <host>  Specify remote host (e.g., gcore-h100.coder)"
-    echo "  --list           List worktree → remote mappings"
-    echo "  --help           Show this help"
-}
-
-detect_remote() {
-    local cwd="$PWD"
-    while [[ "$cwd" != "/" ]]; do
-        local remote
-        remote="$(get_remote_for_worktree "$cwd")"
-        if [[ -n "$remote" ]]; then
-            echo "$remote"
-            return 0
-        fi
-        cwd="$(dirname "$cwd")"
-    done
-    echo "$DEFAULT_REMOTE"
-}
-
-# Parse arguments
-REMOTE=""
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --remote)
-            REMOTE="$2"
-            [[ "$REMOTE" != *.coder ]] && REMOTE="${REMOTE}.coder"
-            shift 2
-            ;;
-        --list|--help|-h)
-            show_help
-            exit 0
-            ;;
-        *)
-            break
-            ;;
-    esac
-done
-
-if [[ $# -eq 0 ]]; then
-    show_help
-    exit 1
-fi
-
-# Auto-detect remote if not specified
-if [[ -z "$REMOTE" ]]; then
-    REMOTE="$(detect_remote)"
-    echo "→ Detected remote: $REMOTE" >&2
-fi
-
-ssh -tt "$REMOTE" "cd $REMOTE_WORKDIR && $*"
+cd ~/work/modular
+mutagen project start    # Start from yml
+mutagen project list     # Verify running
 ```
 
-```bash
-chmod +x ~/.local/bin/hydra
-```
+### 4. rexec - Remote Execution Tool
+
+`~/.local/bin/rexec` is a Python script that:
+- Prints a clear header to stderr (pipeline-safe)
+- Auto-detects remote host from current worktree
+- Supports `--shell` for pipes/redirects
+- Supports `--flush` to sync Mutagen before executing
+- Supports `--tty` for interactive commands
+- Supports `-q` for quiet mode (no header)
 
 **Usage:**
 ```bash
-# Auto-detect remote from current worktree
-hydra ./bazelw build //path:target
-→ Detected remote: b200-hydra.coder
-
-# Explicit remote override
-hydra --remote gcore-h100 ./bazelw test //...
-
-# List configured mappings
-hydra --list
+rexec hostname                          # Basic command
+rexec -q hostname                       # Quiet (no header)
+rexec --shell "ls -la | head -5"        # Shell mode (pipes work)
+rexec --flush ./bazelw test //...       # Flush Mutagen first
+rexec --tty htop                        # Interactive (allocate TTY)
+rexec -r gcore-h100 hostname            # Explicit remote override
 ```
 
-### 7. Create Zellij Layout (Optional)
+### 5. ./r Wrapper (Recommended)
 
-Create `~/.config/zellij/layouts/<layout-name>.kdl`:
+`~/work/modular/r` is a simple wrapper that flushes Mutagen before running rexec:
 
-```kdl
-layout {
-  tab name="edit" cwd="/Users/<user>/work/<repo>" {
-    pane split_direction="vertical" {
-      pane size="70%" command="nvim"
-      pane split_direction="horizontal" {
-        pane name="agent" command="<ai-agent>"
-        pane name="mutagen" command="mutagen" {
-          args "sync" "monitor" "<session-name>"
-        }
-      }
-    }
-  }
-
-  tab name="remote" hide_floating_panes=true {
-    pane split_direction="vertical" {
-      pane size="40%" name="agent-remote" command="<ai-agent>"
-      pane split_direction="horizontal" {
-        pane name="shell-1" command="ssh" {
-          args "-tt" "<workspace>.coder" "cd /home/ubuntu/work/<repo> && exec bash -l"
-        }
-        pane name="shell-2" command="ssh" {
-          args "-tt" "<workspace>.coder" "cd /home/ubuntu/work/<repo> && exec bash -l"
-        }
-      }
-    }
-
-    floating_panes {
-      pane name="nvitop" command="ssh" {
-        args "-tt" "<workspace>.coder" "python3 -m nvitop"
-        x "10%"
-        y "10%"
-        width "80%"
-        height "80%"
-      }
-    }
-  }
-}
+```bash
+./r ./bazelw build //path:target  # Flushes + executes remotely
 ```
 
-Launch: `zellij --layout <layout-name>`
-
-Toggle floating nvitop: `Alt+f`
+This is the recommended way to run remote commands - ensures your local changes are synced before the command runs.
 
 ## Daily Commands Reference
 
-### Mutagen
+### Mutagen Project Mode
 
 ```bash
-mutagen sync list                    # Show all sessions
-mutagen sync monitor <name>          # Real-time status
-mutagen sync pause <name>            # Pause before large git ops
-mutagen sync resume <name>           # Resume after workspace restart
-mutagen sync flush <name>            # Force immediate sync
-mutagen sync terminate <name>        # Stop session (keeps files)
+cd ~/work/modular
+mutagen project start    # Start sync session
+mutagen project list     # Show session status
+mutagen project flush    # Force immediate sync
+mutagen project pause    # Pause before large git ops
+mutagen project resume   # Resume after workspace restart
+mutagen project terminate # Stop session (keeps files)
+```
+
+### Remote Execution
+
+```bash
+./r ./bazelw build //path:target     # Flush + exec (recommended)
+rexec ./bazelw test //path:target    # Exec without flush
+rexec --flush ./bazelw run //...     # Explicit flush + exec
+rexec -q hostname | cat              # Pipeline-safe (no header)
+rexec --tty python                   # Interactive REPL
 ```
 
 ### Zellij
 
 - `Ctrl+a 1/2/...` - Switch tabs
-- `Alt+f` - Toggle floating panes
+- `Ctrl+a f` or `Alt+f` - Toggle floating panes
 - `Ctrl+a d` - Detach session
 
 ## Troubleshooting
@@ -305,18 +203,30 @@ Large repos (10-50GB) take several minutes on first scan. This is normal.
 ### Workspace auto-stopped
 After Coder workspace restarts:
 ```bash
-mutagen sync resume <session-name>
+cd ~/work/modular
+mutagen project resume
 ```
 
 ### Need to change ignores
-Must recreate the session:
+Edit `mutagen.yml`, then:
 ```bash
-mutagen sync terminate <session-name>
-# Run create command again with new --ignore flags
+mutagen project terminate
+mutagen project start
 ```
 
-### Permission issues
-Session was created with `--default-file-mode=0644 --default-directory-mode=0755`. To change, recreate session.
+### SSH multiplexing not working
+Check socket exists:
+```bash
+ls ~/.ssh/cm/
+```
+
+### Sync seems stale
+Force a flush before execution:
+```bash
+./r ./bazelw build //...  # Wrapper auto-flushes
+# or
+rexec --flush ./bazelw build //...
+```
 
 ## Advanced: Multi-Workspace with Git Worktrees
 
@@ -332,73 +242,50 @@ Local (git worktrees)                    Remotes (Coder workspaces)
 
 ~/work/modular-feature-x/          ───►  gcore-h100.coder
   (branch: feature-x)                    ~/work/modular
-
-~/work/modular-experiment/         ───►  gcore-h100-2.coder
-  (branch: experiment)                   ~/work/modular
 ```
 
 ### Setup Steps
 
-**1. Create local git worktrees:**
+**1. Create local git worktree:**
 ```bash
 cd ~/work/modular
 git worktree add ../modular-feature-x feature-x
-git worktree add ../modular-experiment experiment
 ```
 
-**2. Create Mutagen session for each worktree:**
-```bash
-# Session for gcore-h100
-mutagen sync create \
-  --name=modular-gcore \
-  --sync-mode=one-way-replica \
-  --symlink-mode=posix-raw \
-  --default-file-mode=0644 \
-  --default-directory-mode=0755 \
-  --ignore="/.derived" --ignore="/bazel-*" --ignore="**/__pycache__" \
-  --ignore="**/.venv" --ignore="**/*.venv" --ignore="/.git" \
-  ~/work/modular-feature-x \
-  gcore-h100.coder:/home/ubuntu/work/modular
+**2. Create mutagen.yml in the worktree** with the new remote:
+```yaml
+sync:
+  modular:
+    alpha: "/Users/bduke/work/modular-feature-x"
+    beta: "gcore-h100.coder:/home/ubuntu/work/modular"
 ```
 
-**3. Add mapping to hydra script:**
-
-Edit `~/.local/bin/hydra` and add to `get_remote_for_worktree()`:
-```bash
-"$HOME/work/modular-feature-x")
-    echo "gcore-h100.coder"
-    ;;
+**3. Update rexec worktree mappings** in `~/.local/bin/rexec`:
+```python
+WORKTREE_MAPPINGS = {
+    Path.home() / "work" / "modular": "b200-hydra.coder",
+    Path.home() / "work" / "modular-feature-x": "gcore-h100.coder",
+}
 ```
 
 **4. Work in any worktree:**
 ```bash
 cd ~/work/modular-feature-x
-hydra ./bazelw build //path:target
-→ Detected remote: gcore-h100.coder
-```
-
-### Managing Multiple Sessions
-
-```bash
-# List all sync sessions
-mutagen sync list
-
-# Pause all before large git operations
-mutagen sync pause modular-hydra
-mutagen sync pause modular-gcore
-
-# Resume after workspace restarts
-mutagen sync resume modular-hydra
+./r ./bazelw build //path:target  # Auto-routes to gcore-h100.coder
 ```
 
 ## Key Design Decisions
 
-1. **one-way-replica**: Local is authoritative. Prevents remote build artifacts from syncing back.
+1. **Declarative config**: `mutagen.yml` in repo root makes setup reproducible
 
-2. **posix-raw symlinks**: Both macOS and Linux are POSIX. Default "portable" mode breaks some symlinks.
+2. **SSH multiplexing in ~/.ssh/config**: Faster repeated commands, not managed by rexec
 
-3. **Ignore .git**: Each side manages its own git state independently.
+3. **Header to stderr**: `rexec` output is pipeline-safe (`rexec -q cmd | grep foo`)
 
-4. **Ignore build outputs**: Bazel outputs can be 10-50GB. Syncing them defeats the purpose.
+4. **./r wrapper**: One obvious command in repo root for "run this remotely"
 
-5. **Worktree-per-remote**: Each git worktree maps to one remote workspace, enabling parallel work on different branches with different GPU types.
+5. **one-way-replica**: Local is authoritative. Prevents remote build artifacts from syncing back.
+
+6. **posix-raw symlinks**: Both macOS and Linux are POSIX. Default "portable" mode breaks some symlinks.
+
+7. **Ignore build outputs**: Bazel outputs can be 10-50GB. Syncing them defeats the purpose.

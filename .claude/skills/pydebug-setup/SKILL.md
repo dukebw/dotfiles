@@ -26,7 +26,7 @@ pydebug-setup -r
 # Dry run (show commands without executing)
 pydebug-setup -n
 
-# Run locally instead of via hydra (remote)
+# Run locally instead of via rexec (remote)
 pydebug-setup -l //path:target
 ```
 
@@ -37,7 +37,7 @@ pydebug-setup -l //path:target
 3. **Uses fzf** for interactive fuzzy selection with color-coded prefixes:
    - `[bin]` (green) - py_binary targets
    - `[test]` (yellow) - py_test targets
-4. **Creates venv** by running `./bazelw run //target.venv` via hydra
+4. **Creates venv** by running `./bazelw run //target.venv` via rexec
 5. **Installs debugpy** into the venv
 
 ## Integration with nvim-dap
@@ -77,5 +77,5 @@ pydebug-setup //max/python/max/entrypoints:pipelines
 ## Dependencies
 
 - `fzf` - for interactive selection
-- `hydra` - for running commands on remote (see mutagen-remote-workflow skill)
+- `rexec` - for running commands on remote (see mutagen-remote-workflow skill)
 - `bazel` / `bazelw` - for querying targets and creating venvs
