@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""rexec - Remote Execution Tool
+
+IMPORTANT FOR AI ASSISTANTS (Claude, Codex, Kimi, etc.):
+This script executes commands on a REMOTE SERVER via SSH, NOT locally.
+Commands run on a Coder workspace with files synced via Mutagen.
+
+Usage:
+    rexec <command> [args...]         # Run command remotely (argv mode)
+    rexec --shell "cmd | pipe"        # Run shell string remotely
+    rexec --flush <command>           # Flush Mutagen before running
+    rexec --tty <command>             # Allocate TTY (for interactive)
+    rexec -q <command>                # Quiet mode (no header)
+
+Examples:
+    rexec ./bazelw build //path:target
+    rexec --shell "ls -la | head -5"
+    rexec --flush ./bazelw test //...
+    rexec --tty htop
+"""
+
+import argparse
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+# Colors (stderr only)
+RED = "\033[0;31m"
+GREEN = "\033[0;32m"
+YELLOW = "\033[0;33m"
+BLUE = "\033[0;34m"
+CYAN = "\033[0;36m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+NC = "\033[0m"
+
+# Configuration
+DEFAULT_REMOTE = "b200-hydra.coder"
+REMOTE_WORKDIR = "/home/ubuntu/work/modular"
+
+# Worktree to remote mapping
+WORKTREE_MAPPINGS = {
+    Path.home() / "work" / "modular": "b200-hydra.coder",
+    # Add more mappings as needed:
+    # Path.home() / "work" / "modular-feature-x": "gcore-h100.coder",
+}
+
+
+def eprint(*args, **kwargs):
+    """Print to stderr."""
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def get_local_git_info() -> str:
+    """Get local git commit for header."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def detect_remote_from_cwd() -> str:
+    """Detect the remote host based on the current working directory."""
+    cwd = Path.cwd()
+    for path in [cwd] + list(cwd.parents):
+        if path in WORKTREE_MAPPINGS:
+            return WORKTREE_MAPPINGS[path]
+    return DEFAULT_REMOTE
+
+
+def normalize_host(host: str) -> str:
+    """Ensure host has .coder suffix."""
+    if not host.endswith(".coder"):
+        return f"{host}.coder"
+    return host
+
+
+def flush_mutagen() -> bool:
+    """Flush Mutagen project sync."""
+    eprint(f"{BLUE}Flushing Mutagen...{NC}", end=" ")
+    result = subprocess.run(
+        ["mutagen", "project", "flush"],
+        capture_output=True,
+        cwd=Path.home() / "work" / "modular",
+    )
+    if result.returncode == 0:
+        eprint(f"{GREEN}done{NC}")
+        return True
+    else:
+        # Try session-based flush as fallback
+        result = subprocess.run(
+            ["mutagen", "sync", "flush", "modular-hydra"],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            eprint(f"{GREEN}done{NC}")
+            return True
+        eprint(f"{YELLOW}skipped{NC}")
+        return False
+
+
+def print_header(host: str, workdir: str, command: str) -> None:
+    """Print a clear header indicating remote execution (to stderr)."""
+    commit = get_local_git_info()
+    eprint(f"{BOLD}╔══════════════════════════════════════════════════════════════╗{NC}")
+    eprint(f"{BOLD}║{NC} {CYAN}REMOTE EXECUTION{NC}                                             {BOLD}║{NC}")
+    eprint(f"{BOLD}╠══════════════════════════════════════════════════════════════╣{NC}")
+    eprint(f"{BOLD}║{NC} Host:    {GREEN}{host}{NC}")
+    eprint(f"{BOLD}║{NC} Workdir: {BLUE}{workdir}{NC}")
+    eprint(f"{BOLD}║{NC} Commit:  {DIM}{commit}{NC} (local)")
+    eprint(f"{BOLD}║{NC} Command: {YELLOW}{command}{NC}")
+    eprint(f"{BOLD}╚══════════════════════════════════════════════════════════════╝{NC}")
+    eprint()
+
+
+def execute(host: str, command: list[str], shell_mode: bool = False,
+            tty: bool = False, quiet: bool = False) -> int:
+    """Execute a command on the remote host."""
+    # Build the command string
+    if shell_mode:
+        # Shell mode: wrap in bash -lc
+        cmd_str = command[0] if len(command) == 1 else " ".join(command)
+        remote_cmd = f"cd {REMOTE_WORKDIR} && bash -lc {shlex.quote(cmd_str)}"
+    else:
+        # Argv mode: proper escaping
+        cmd_str = " ".join(shlex.quote(arg) for arg in command)
+        remote_cmd = f"cd {REMOTE_WORKDIR} && {cmd_str}"
+
+    if not quiet:
+        print_header(host, REMOTE_WORKDIR, cmd_str)
+
+    # Build SSH command (multiplexing handled by ~/.ssh/config)
+    ssh_cmd = ["ssh"]
+    if tty:
+        ssh_cmd.append("-tt")
+    ssh_cmd.extend([host, remote_cmd])
+
+    # Execute
+    result = subprocess.run(ssh_cmd)
+    return result.returncode
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Execute commands on a remote Coder workspace via SSH.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    rexec ./bazelw build //path:target     # Argv mode (safe escaping)
+    rexec --shell "ls | head -5"           # Shell mode (pipes work)
+    rexec --flush ./bazelw test //...      # Flush sync first
+    rexec --tty htop                       # Interactive (allocate TTY)
+    rexec -q hostname                      # Quiet (no header)
+        """,
+    )
+
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to execute")
+    parser.add_argument("--remote", "-r", help="Remote host (default: auto-detect)")
+    parser.add_argument("--shell", "-s", action="store_true",
+                        help="Shell mode: run as bash -lc 'command'")
+    parser.add_argument("--tty", "-t", action="store_true",
+                        help="Allocate TTY (for interactive commands)")
+    parser.add_argument("--flush", "-f", action="store_true",
+                        help="Flush Mutagen sync before executing")
+    parser.add_argument("--quiet", "-q", action="store_true",
+                        help="Suppress header output")
+
+    args = parser.parse_args()
+
+    # Determine the remote host
+    host = normalize_host(args.remote) if args.remote else detect_remote_from_cwd()
+
+    # Require a command
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # Flush if requested
+    if args.flush:
+        flush_mutagen()
+
+    # Execute the command
+    sys.exit(execute(host, args.command, args.shell, args.tty, args.quiet))
+
+
+if __name__ == "__main__":
+    main()
