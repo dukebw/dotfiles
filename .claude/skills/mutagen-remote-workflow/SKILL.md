@@ -1,6 +1,6 @@
 ---
 name: mutagen-remote-workflow
-description: Set up local editing + remote build workflow using Mutagen file sync with Coder workspaces. Use when the user wants to edit code locally in neovim while running builds/tests on a remote GPU server.
+description: Set up local editing + remote build workflow using Mutagen file sync with Coder workspaces. Includes the `hydra` helper script for running commands on remote machines. Use when the user mentions hydra, mutagen, remote builds, Coder workspaces, or syncing files to a remote GPU server.
 ---
 
 # Mutagen Remote Workflow Setup
@@ -122,30 +122,112 @@ ssh <workspace>.coder "find ~/work/<repo> -type d -name '__pycache__' -exec rm -
 
 ### 6. Create Remote Command Helper
 
-Create `~/.local/bin/<helper-name>`:
+Create `~/.local/bin/hydra` (or your preferred name):
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Smart helper script to run commands on remote Coder workspaces
+# Auto-detects which worktree you're in and routes to the mapped remote
+#
+# Usage: hydra [--remote <host>] <command>
+
+# Default remote if no mapping found
+DEFAULT_REMOTE="b200-hydra.coder"
+
+# Remote working directory
+REMOTE_WORKDIR="/home/ubuntu/work/modular"
+
+# Worktree → Remote mapping function
+# Edit this function to add new worktree mappings
+get_remote_for_worktree() {
+    local worktree="$1"
+    case "$worktree" in
+        "$HOME/work/modular")
+            echo "b200-hydra.coder"
+            ;;
+        # Add more mappings as needed:
+        # "$HOME/work/modular-feature-x")
+        #     echo "gcore-h100.coder"
+        #     ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+show_help() {
+    echo "Usage: hydra [--remote <host>] <command>"
+    echo ""
+    echo "Options:"
+    echo "  --remote <host>  Specify remote host (e.g., gcore-h100.coder)"
+    echo "  --list           List worktree → remote mappings"
+    echo "  --help           Show this help"
+}
+
+detect_remote() {
+    local cwd="$PWD"
+    while [[ "$cwd" != "/" ]]; do
+        local remote
+        remote="$(get_remote_for_worktree "$cwd")"
+        if [[ -n "$remote" ]]; then
+            echo "$remote"
+            return 0
+        fi
+        cwd="$(dirname "$cwd")"
+    done
+    echo "$DEFAULT_REMOTE"
+}
+
+# Parse arguments
+REMOTE=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --remote)
+            REMOTE="$2"
+            [[ "$REMOTE" != *.coder ]] && REMOTE="${REMOTE}.coder"
+            shift 2
+            ;;
+        --list|--help|-h)
+            show_help
+            exit 0
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
 if [[ $# -eq 0 ]]; then
-    echo "Usage: <helper-name> <command>"
-    echo "Runs command on <workspace>.coder in ~/work/<repo>"
+    show_help
     exit 1
 fi
 
-ssh -tt <workspace>.coder "cd /home/ubuntu/work/<repo> && $*"
+# Auto-detect remote if not specified
+if [[ -z "$REMOTE" ]]; then
+    REMOTE="$(detect_remote)"
+    echo "→ Detected remote: $REMOTE" >&2
+fi
+
+ssh -tt "$REMOTE" "cd $REMOTE_WORKDIR && $*"
 ```
 
 ```bash
-chmod +x ~/.local/bin/<helper-name>
+chmod +x ~/.local/bin/hydra
 ```
 
-Usage:
+**Usage:**
 ```bash
-<helper-name> ./bazelw build //path:target
-<helper-name> ./bazelw test //...
-<helper-name> python3 script.py
+# Auto-detect remote from current worktree
+hydra ./bazelw build //path:target
+→ Detected remote: b200-hydra.coder
+
+# Explicit remote override
+hydra --remote gcore-h100 ./bazelw test //...
+
+# List configured mappings
+hydra --list
 ```
 
 ### 7. Create Zellij Layout (Optional)
@@ -236,6 +318,79 @@ mutagen sync terminate <session-name>
 ### Permission issues
 Session was created with `--default-file-mode=0644 --default-directory-mode=0755`. To change, recreate session.
 
+## Advanced: Multi-Workspace with Git Worktrees
+
+For working on multiple branches simultaneously, each synced to a different remote GPU:
+
+### Architecture
+
+```
+Local (git worktrees)                    Remotes (Coder workspaces)
+─────────────────────                    ─────────────────────────
+~/work/modular/                    ───►  b200-hydra.coder
+  (branch: main)                         ~/work/modular
+
+~/work/modular-feature-x/          ───►  gcore-h100.coder
+  (branch: feature-x)                    ~/work/modular
+
+~/work/modular-experiment/         ───►  gcore-h100-2.coder
+  (branch: experiment)                   ~/work/modular
+```
+
+### Setup Steps
+
+**1. Create local git worktrees:**
+```bash
+cd ~/work/modular
+git worktree add ../modular-feature-x feature-x
+git worktree add ../modular-experiment experiment
+```
+
+**2. Create Mutagen session for each worktree:**
+```bash
+# Session for gcore-h100
+mutagen sync create \
+  --name=modular-gcore \
+  --sync-mode=one-way-replica \
+  --symlink-mode=posix-raw \
+  --default-file-mode=0644 \
+  --default-directory-mode=0755 \
+  --ignore="/.derived" --ignore="/bazel-*" --ignore="**/__pycache__" \
+  --ignore="**/.venv" --ignore="**/*.venv" --ignore="/.git" \
+  ~/work/modular-feature-x \
+  gcore-h100.coder:/home/ubuntu/work/modular
+```
+
+**3. Add mapping to hydra script:**
+
+Edit `~/.local/bin/hydra` and add to `get_remote_for_worktree()`:
+```bash
+"$HOME/work/modular-feature-x")
+    echo "gcore-h100.coder"
+    ;;
+```
+
+**4. Work in any worktree:**
+```bash
+cd ~/work/modular-feature-x
+hydra ./bazelw build //path:target
+→ Detected remote: gcore-h100.coder
+```
+
+### Managing Multiple Sessions
+
+```bash
+# List all sync sessions
+mutagen sync list
+
+# Pause all before large git operations
+mutagen sync pause modular-hydra
+mutagen sync pause modular-gcore
+
+# Resume after workspace restarts
+mutagen sync resume modular-hydra
+```
+
 ## Key Design Decisions
 
 1. **one-way-replica**: Local is authoritative. Prevents remote build artifacts from syncing back.
@@ -245,3 +400,5 @@ Session was created with `--default-file-mode=0644 --default-directory-mode=0755
 3. **Ignore .git**: Each side manages its own git state independently.
 
 4. **Ignore build outputs**: Bazel outputs can be 10-50GB. Syncing them defeats the purpose.
+
+5. **Worktree-per-remote**: Each git worktree maps to one remote workspace, enabling parallel work on different branches with different GPU types.
