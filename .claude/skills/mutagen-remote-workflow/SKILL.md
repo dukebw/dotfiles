@@ -391,34 +391,6 @@ mutagen sync pause modular-gcore
 mutagen sync resume modular-hydra
 ```
 
-## Python Debug Setup
-
-For debugging Python Bazel targets with nvim-dap, use the `pydebug-setup` script:
-
-```bash
-# Interactive target selection with fzf
-pydebug-setup
-
-# Direct target
-pydebug-setup //max/python/max/entrypoints:pipelines
-
-# Refresh target cache
-pydebug-setup -r
-
-# Dry run (show commands without executing)
-pydebug-setup -n
-
-# Run locally instead of via hydra
-pydebug-setup -l //path:target
-```
-
-This script:
-1. Uses fzf to select a Bazel py_binary/py_test target
-2. Runs `./bazelw run //target.venv` via hydra to create the venv
-3. Installs debugpy into the venv
-
-After setup, use nvim-dap with `<leader>ec` to start debugging.
-
 ## Key Design Decisions
 
 1. **one-way-replica**: Local is authoritative. Prevents remote build artifacts from syncing back.
