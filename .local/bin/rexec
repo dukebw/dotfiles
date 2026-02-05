@@ -38,13 +38,25 @@ NC = "\033[0m"
 
 # Configuration
 DEFAULT_REMOTE = "b200-hydra.coder"
-REMOTE_WORKDIR = "/home/ubuntu/work/modular"
+DEFAULT_WORKDIR = "/home/ubuntu/work/modular"
 
-# Worktree to remote mapping
+# Worktree to remote mapping (host, workdir)
 WORKTREE_MAPPINGS = {
-    Path.home() / "work" / "modular": "b200-hydra.coder",
+    Path.home() / "work" / "modular": ("b200-hydra.coder", "/home/ubuntu/work/modular"),
+    Path.home() / "work" / "modular-bisect-mistral": (
+        "b200-hydra.coder",
+        "/home/ubuntu/work/modular-bisect-mistral",
+    ),
+    Path.home() / "work" / "modular-mlir-context": (
+        "b200-hydra.coder",
+        "/home/ubuntu/work/modular-mlir-context",
+    ),
+    Path.home() / "work" / "modular-kbench-bisect": (
+        "b200-hydra-2.coder",
+        "/home/ubuntu/work/modular-kbench-bisect",
+    ),
     # Add more mappings as needed:
-    # Path.home() / "work" / "modular-feature-x": "gcore-h100.coder",
+    # Path.home() / "work" / "modular-feature-x": ("gcore-h100.coder", "/home/ubuntu/work/modular"),
 }
 
 
@@ -65,13 +77,16 @@ def get_local_git_info() -> str:
         return "unknown"
 
 
-def detect_remote_from_cwd() -> str:
-    """Detect the remote host based on the current working directory."""
+def detect_remote_from_cwd() -> tuple[str, str]:
+    """Detect the remote host/workdir based on the current working directory."""
     cwd = Path.cwd()
     for path in [cwd] + list(cwd.parents):
         if path in WORKTREE_MAPPINGS:
-            return WORKTREE_MAPPINGS[path]
-    return DEFAULT_REMOTE
+            mapping = WORKTREE_MAPPINGS[path]
+            if isinstance(mapping, tuple):
+                return mapping
+            return mapping, DEFAULT_WORKDIR
+    return DEFAULT_REMOTE, DEFAULT_WORKDIR
 
 
 def normalize_host(host: str) -> str:
@@ -81,13 +96,21 @@ def normalize_host(host: str) -> str:
     return host
 
 
+def _find_mutagen_root() -> Path:
+    cwd = Path.cwd()
+    for path in [cwd] + list(cwd.parents):
+        if (path / "mutagen.yml").exists():
+            return path
+    return Path.home() / "work" / "modular"
+
+
 def flush_mutagen() -> bool:
     """Flush Mutagen project sync."""
     eprint(f"{BLUE}Flushing Mutagen...{NC}", end=" ")
     result = subprocess.run(
         ["mutagen", "project", "flush"],
         capture_output=True,
-        cwd=Path.home() / "work" / "modular",
+        cwd=_find_mutagen_root(),
     )
     if result.returncode == 0:
         eprint(f"{GREEN}done{NC}")
@@ -119,21 +142,21 @@ def print_header(host: str, workdir: str, command: str) -> None:
     eprint()
 
 
-def execute(host: str, command: list[str], shell_mode: bool = False,
+def execute(host: str, workdir: str, command: list[str], shell_mode: bool = False,
             tty: bool = False, quiet: bool = False) -> int:
     """Execute a command on the remote host."""
     # Build the command string
     if shell_mode:
         # Shell mode: wrap in bash -lc
         cmd_str = command[0] if len(command) == 1 else " ".join(command)
-        remote_cmd = f"cd {REMOTE_WORKDIR} && bash -lc {shlex.quote(cmd_str)}"
+        remote_cmd = f"cd {workdir} && bash -lc {shlex.quote(cmd_str)}"
     else:
         # Argv mode: proper escaping
         cmd_str = " ".join(shlex.quote(arg) for arg in command)
-        remote_cmd = f"cd {REMOTE_WORKDIR} && {cmd_str}"
+        remote_cmd = f"cd {workdir} && {cmd_str}"
 
     if not quiet:
-        print_header(host, REMOTE_WORKDIR, cmd_str)
+        print_header(host, workdir, cmd_str)
 
     # Build SSH command (multiplexing handled by ~/.ssh/config)
     ssh_cmd = ["ssh"]
@@ -174,7 +197,9 @@ Examples:
     args = parser.parse_args()
 
     # Determine the remote host
-    host = normalize_host(args.remote) if args.remote else detect_remote_from_cwd()
+    host, workdir = detect_remote_from_cwd()
+    if args.remote:
+        host = normalize_host(args.remote)
 
     # Require a command
     if not args.command:
@@ -186,7 +211,7 @@ Examples:
         flush_mutagen()
 
     # Execute the command
-    sys.exit(execute(host, args.command, args.shell, args.tty, args.quiet))
+    sys.exit(execute(host, workdir, args.command, args.shell, args.tty, args.quiet))
 
 
 if __name__ == "__main__":
