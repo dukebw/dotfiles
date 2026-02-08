@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# r - Run remote with auto-flush
+# Convenience wrapper: flushes Mutagen sync, then executes via rexec.
+# Works from any directory within a Mutagen-synced worktree.
+exec rexec --flush "$@"
