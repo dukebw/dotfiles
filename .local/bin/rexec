@@ -160,8 +160,11 @@ def execute(host: str, workdir: str, command: list[str], shell_mode: bool = Fals
 
     # Build SSH command (multiplexing handled by ~/.ssh/config)
     ssh_cmd = ["ssh"]
-    if tty:
-        ssh_cmd.append("-tt")
+    # Allocate a PTY when stdin is a terminal (even without --tty) so that
+    # Ctrl+C propagates as SIGINT to the remote process.  Without a PTY the
+    # remote side has no controlling terminal and interrupt signals are lost.
+    if tty or sys.stdin.isatty():
+        ssh_cmd.append("-t")
     ssh_cmd.extend([host, remote_cmd])
 
     # Execute
