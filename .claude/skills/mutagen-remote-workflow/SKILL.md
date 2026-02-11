@@ -28,7 +28,7 @@ Set up a local editing + remote build/execution workflow using Mutagen file sync
 ```bash
 # In ~/work/modular
 mutagen project start          # Start sync from mutagen.yml
-./r ./bazelw build //path:target  # Run command remotely (flushes first)
+r ./bazelw build //path:target  # Run command remotely (flushes first)
 rexec hostname                 # Run command remotely (no flush)
 ```
 
@@ -38,7 +38,7 @@ rexec hostname                 # Run command remotely (no flush)
 |------|---------|
 | `~/work/modular/mutagen.yml` | Declarative Mutagen sync config |
 | `~/.local/bin/rexec` | Remote execution helper (Python) |
-| `~/work/modular/r` | Wrapper: flush + rexec |
+| `~/.local/bin/r` | Wrapper: flush + rexec |
 | `~/.ssh/config` | SSH multiplexing config |
 
 ## Prerequisites
@@ -155,12 +155,12 @@ rexec --tty htop                        # Interactive (allocate TTY)
 rexec -r gcore-h100 hostname            # Explicit remote override
 ```
 
-### 5. ./r Wrapper (Recommended)
+### 5. r Wrapper (Recommended)
 
-`~/work/modular/r` is a simple wrapper that flushes Mutagen before running rexec:
+`~/.local/bin/r` is a simple wrapper that flushes Mutagen before running rexec:
 
 ```bash
-./r ./bazelw build //path:target  # Flushes + executes remotely
+r ./bazelw build //path:target  # Flushes + executes remotely
 ```
 
 This is the recommended way to run remote commands - ensures your local changes are synced before the command runs.
@@ -182,7 +182,7 @@ mutagen project terminate # Stop session (keeps files)
 ### Remote Execution
 
 ```bash
-./r ./bazelw build //path:target     # Flush + exec (recommended)
+r ./bazelw build //path:target       # Flush + exec (recommended)
 rexec ./bazelw test //path:target    # Exec without flush
 rexec --flush ./bazelw run //...     # Explicit flush + exec
 rexec -q hostname | cat              # Pipeline-safe (no header)
@@ -223,7 +223,7 @@ ls ~/.ssh/cm/
 ### Sync seems stale
 Force a flush before execution:
 ```bash
-./r ./bazelw build //...  # Wrapper auto-flushes
+r ./bazelw build //...  # Wrapper auto-flushes
 # or
 rexec --flush ./bazelw build //...
 ```
@@ -271,7 +271,7 @@ WORKTREE_MAPPINGS = {
 **4. Work in any worktree:**
 ```bash
 cd ~/work/modular-feature-x
-./r ./bazelw build //path:target  # Auto-routes to gcore-h100.coder
+r ./bazelw build //path:target  # Auto-routes to gcore-h100.coder
 ```
 
 ## Key Design Decisions
@@ -282,7 +282,7 @@ cd ~/work/modular-feature-x
 
 3. **Header to stderr**: `rexec` output is pipeline-safe (`rexec -q cmd | grep foo`)
 
-4. **./r wrapper**: One obvious command in repo root for "run this remotely"
+4. **r wrapper**: One obvious command in PATH for "run this remotely"
 
 5. **one-way-replica**: Local is authoritative. Prevents remote build artifacts from syncing back.
 
