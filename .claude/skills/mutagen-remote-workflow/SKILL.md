@@ -155,6 +155,30 @@ rexec --tty htop                        # Interactive (allocate TTY)
 rexec -r gcore-h100 hostname            # Explicit remote override
 ```
 
+### Multi-line remote commands (recommended)
+
+Use a heredoc (`<<'EOF'`) for multi-line remote shell commands. This avoids
+quote-escaping issues and keeps scripts readable.
+
+```bash
+# Define once per shell session.
+run_remote() {
+  rexec --flush --shell "$(cat)"
+}
+
+run_remote <<'EOF'
+set -euo pipefail
+OUT=/home/ubuntu/work/modular-scratch/example
+mkdir -p "$OUT"
+./bazelw test --config=ci //max/tests/integration:smoke
+EOF
+```
+
+Notes:
+- Use `<<'EOF'` (quoted delimiter) to prevent local variable expansion.
+- `<<<` is a here-string, not a heredoc, and is not ideal for multi-line scripts.
+- Use `rexec -q` if you need pipeline-clean stdout.
+
 ### 5. r Wrapper (Recommended)
 
 `~/.local/bin/r` is a simple wrapper that flushes Mutagen before running rexec:
