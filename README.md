@@ -42,6 +42,29 @@ cd ~/dotfiles && ./install.sh
 - `opencode/opencode.json` - OpenCode config
 - `ssh/config.template` - X11 forwarding for Coder
 
+### Remote Helpers
+- `bin/r` - run remote command via `rexec --flush`
+- `bin/rlog` - run remote command and mirror logs from `/home/ubuntu/shared/logs`
+- `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
+
+## Remote Log Sync
+
+One-time setup:
+
+```bash
+setup-b200-shared-sync
+```
+
+Run remote commands with auto-mirrored logs:
+
+```bash
+rlog --label deepseek -- ./bazelw run --config=disable-lint //max/tests/integration/tools:generate_llm_logits -- \
+  --framework max --pipeline deepseek-ai/DeepSeek-R1 --device gpu:0,1,2,3,4,5,6,7 \
+  --encoding float8_e4m3fn --output /home/ubuntu/shared/logs/deepseek/output.json
+```
+
+Logs appear locally under `~/shared/b200-hydra/logs/<label>/<run-id>/`.
+
 ## Manual Steps After Install
 
 1. Copy SSH keys from another machine

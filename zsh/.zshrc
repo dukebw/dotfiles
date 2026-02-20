@@ -135,3 +135,8 @@ export EDITOR=nvim
 # fd alias (hidden files)
 alias fdh="fd --hidden --no-ignore"
 export PATH="$HOME/.local/bin:$PATH"
+
+# Remote log runner wrapper.
+rlog() {
+  "$HOME/.local/bin/rlog" "$@"
+}

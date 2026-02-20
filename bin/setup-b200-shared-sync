@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REMOTE_HOST="b200-hydra.coder"
+REMOTE_DIR="/home/ubuntu/shared"
+LOCAL_DIR="$HOME/shared/b200-hydra"
+SESSION_NAME="b200-hydra-shared-r2l"
+RECREATE=0
+
+usage() {
+  cat <<'EOF'
+Usage:
+  setup-b200-shared-sync [options]
+
+Sets up a dedicated Mutagen one-way-safe sync from:
+  b200-hydra.coder:/home/ubuntu/shared -> ~/shared/b200-hydra
+
+Options:
+  --host <host>       Remote host (default: b200-hydra.coder)
+  --remote-dir <dir>  Remote source directory (default: /home/ubuntu/shared)
+  --local-dir <dir>   Local mirror directory (default: ~/shared/b200-hydra)
+  --session <name>    Mutagen session name (default: b200-hydra-shared-r2l)
+  --recreate          Terminate and recreate session if it exists
+  -h, --help          Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      REMOTE_HOST="$2"
+      shift 2
+      ;;
+    --remote-dir)
+      REMOTE_DIR="$2"
+      shift 2
+      ;;
+    --local-dir)
+      LOCAL_DIR="$2"
+      shift 2
+      ;;
+    --session)
+      SESSION_NAME="$2"
+      shift 2
+      ;;
+    --recreate)
+      RECREATE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if ! command -v mutagen >/dev/null 2>&1; then
+  echo "mutagen not found in PATH" >&2
+  exit 1
+fi
+
+mkdir -p "$LOCAL_DIR"
+ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_DIR/logs'"
+
+if mutagen sync list "$SESSION_NAME" >/dev/null 2>&1; then
+  if [[ "$RECREATE" == "1" ]]; then
+    echo "Recreating existing Mutagen session: $SESSION_NAME"
+    mutagen sync terminate "$SESSION_NAME"
+  else
+    echo "Mutagen session already exists: $SESSION_NAME"
+    mutagen sync resume "$SESSION_NAME" >/dev/null 2>&1 || true
+    mutagen sync flush "$SESSION_NAME" >/dev/null 2>&1 || true
+    mutagen sync list "$SESSION_NAME"
+    exit 0
+  fi
+fi
+
+echo "Creating Mutagen session: $SESSION_NAME"
+mutagen sync create \
+  --name "$SESSION_NAME" \
+  --mode one-way-safe \
+  --ignore-vcs \
+  --ignore '.DS_Store' \
+  --ignore '*.swp' \
+  --ignore '*.tmp' \
+  "$REMOTE_HOST:$REMOTE_DIR" \
+  "$LOCAL_DIR"
+
+mutagen sync list "$SESSION_NAME"

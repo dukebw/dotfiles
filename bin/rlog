@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REMOTE_HOST="b200-hydra.coder"
+REMOTE_WORKDIR="/home/ubuntu/work/modular"
+REMOTE_SHARED_ROOT="/home/ubuntu/shared"
+LOCAL_MIRROR_ROOT="$HOME/shared/b200-hydra/logs"
+MUTAGEN_SESSION_NAME="b200-hydra-shared-r2l"
+LABEL="run"
+RUN_ID=""
+DO_FLUSH=1
+SOURCE_START_MODULAR=1
+WAIT_LOCAL_SECS=30
+
+usage() {
+  cat <<'EOF'
+Usage:
+  rlog [options] -- <command> [args...]
+
+Runs a command remotely via rexec and writes logs/metadata under
+/home/ubuntu/shared/logs so they sync back locally via Mutagen.
+
+Options:
+  --host <host>          Remote host (default: b200-hydra.coder)
+  --workdir <path>       Remote working directory (default: /home/ubuntu/work/modular)
+  --label <name>         Log label namespace (default: run)
+  --run-id <id>          Explicit run id (default: UTC timestamp)
+  --no-flush             Do not pass --flush to rexec
+  --no-source            Do not source utils/start-modular.sh remotely
+  --wait-local <secs>    Seconds to wait for local mirrored log (default: 30)
+  -h, --help             Show this help
+
+Example:
+  rlog --label deepseek -- \
+    ./bazelw run --config=disable-lint //max/tests/integration/tools:generate_llm_logits -- \
+      --framework max --pipeline deepseek-ai/DeepSeek-R1 --device gpu:0,1,2,3,4,5,6,7 \
+      --encoding float8_e4m3fn \
+      --output /home/ubuntu/shared/logs/deepseek/output.json
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host)
+      REMOTE_HOST="$2"
+      shift 2
+      ;;
+    --workdir)
+      REMOTE_WORKDIR="$2"
+      shift 2
+      ;;
+    --label)
+      LABEL="$2"
+      shift 2
+      ;;
+    --run-id)
+      RUN_ID="$2"
+      shift 2
+      ;;
+    --no-flush)
+      DO_FLUSH=0
+      shift
+      ;;
+    --no-source)
+      SOURCE_START_MODULAR=0
+      shift
+      ;;
+    --wait-local)
+      WAIT_LOCAL_SECS="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  echo "Missing command after --" >&2
+  usage
+  exit 2
+fi
+
+if ! command -v rexec >/dev/null 2>&1; then
+  echo "rexec not found in PATH" >&2
+  exit 1
+fi
+
+if [[ -z "$RUN_ID" ]]; then
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+
+REMOTE_LOG_ROOT="$REMOTE_SHARED_ROOT/logs"
+RUN_DIR="$REMOTE_LOG_ROOT/$LABEL/$RUN_ID"
+REMOTE_LOG_FILE="$RUN_DIR/run.log"
+REMOTE_META_FILE="$RUN_DIR/meta.txt"
+LOCAL_LOG_FILE="$LOCAL_MIRROR_ROOT/$LABEL/$RUN_ID/run.log"
+LOCAL_META_FILE="$LOCAL_MIRROR_ROOT/$LABEL/$RUN_ID/meta.txt"
+
+printf -v CMD_STRING '%q ' "$@"
+CMD_STRING="${CMD_STRING% }"
+
+printf -v RUN_DIR_Q '%q' "$RUN_DIR"
+printf -v REMOTE_LOG_FILE_Q '%q' "$REMOTE_LOG_FILE"
+printf -v REMOTE_META_FILE_Q '%q' "$REMOTE_META_FILE"
+printf -v REMOTE_WORKDIR_Q '%q' "$REMOTE_WORKDIR"
+printf -v CMD_STRING_Q '%q' "$CMD_STRING"
+printf -v LABEL_Q '%q' "$LABEL"
+printf -v RUN_ID_Q '%q' "$RUN_ID"
+printf -v SOURCE_START_MODULAR_Q '%q' "$SOURCE_START_MODULAR"
+
+REMOTE_SCRIPT="$(cat <<EOF
+set -eo pipefail
+RUN_DIR=$RUN_DIR_Q
+LOG_FILE=$REMOTE_LOG_FILE_Q
+META_FILE=$REMOTE_META_FILE_Q
+WORKDIR=$REMOTE_WORKDIR_Q
+CMD_STRING=$CMD_STRING_Q
+LABEL=$LABEL_Q
+RUN_ID=$RUN_ID_Q
+SOURCE_START_MODULAR=$SOURCE_START_MODULAR_Q
+
+mkdir -p "\$RUN_DIR"
+{
+  echo "label=\$LABEL"
+  echo "run_id=\$RUN_ID"
+  echo "started_at_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "host=\$(hostname)"
+  echo "workdir=\$WORKDIR"
+  echo "command=\$CMD_STRING"
+} > "\$META_FILE"
+
+cd "\$WORKDIR"
+if [[ "\$SOURCE_START_MODULAR" == "1" && -f utils/start-modular.sh ]]; then
+  source utils/start-modular.sh
+fi
+
+set +e
+bash -lc "\$CMD_STRING" 2>&1 | tee "\$LOG_FILE"
+status=\${PIPESTATUS[0]}
+set -e
+
+echo "exit_code=\$status" >> "\$META_FILE"
+echo "finished_at_utc=\$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "\$META_FILE"
+exit "\$status"
+EOF
+)"
+
+echo "Remote run dir: $RUN_DIR"
+echo "Remote log: $REMOTE_LOG_FILE"
+echo "Expected local log: $LOCAL_LOG_FILE"
+
+REXEC_ARGS=(-r "$REMOTE_HOST")
+if [[ "$DO_FLUSH" == "1" ]]; then
+  REXEC_ARGS+=(--flush)
+fi
+REXEC_ARGS+=(--shell "$REMOTE_SCRIPT")
+
+set +e
+rexec "${REXEC_ARGS[@]}"
+REMOTE_EXIT=$?
+set -e
+
+if mutagen sync list "$MUTAGEN_SESSION_NAME" >/dev/null 2>&1; then
+  mutagen sync flush "$MUTAGEN_SESSION_NAME" >/dev/null 2>&1 || true
+fi
+
+if [[ "$WAIT_LOCAL_SECS" -gt 0 ]]; then
+  deadline=$((SECONDS + WAIT_LOCAL_SECS))
+  while (( SECONDS < deadline )); do
+    if [[ -f "$LOCAL_LOG_FILE" || -f "$LOCAL_META_FILE" ]]; then
+      break
+    fi
+    sleep 1
+  done
+fi
+
+if [[ -f "$LOCAL_LOG_FILE" ]]; then
+  echo "Local mirrored log available: $LOCAL_LOG_FILE"
+else
+  echo "Local mirrored log not visible yet (still syncing): $LOCAL_LOG_FILE" >&2
+fi
+
+exit "$REMOTE_EXIT"

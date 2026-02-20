@@ -55,6 +55,11 @@ backup_and_link "$DOTFILES_DIR/git/.gitconfig" "$HOME/.gitconfig"
 mkdir -p "$HOME/.config/zellij"
 backup_and_link "$DOTFILES_DIR/zellij/config.kdl" "$HOME/.config/zellij/config.kdl"
 
+mkdir -p "$HOME/.local/bin"
+backup_and_link "$DOTFILES_DIR/bin/r" "$HOME/.local/bin/r"
+backup_and_link "$DOTFILES_DIR/bin/rlog" "$HOME/.local/bin/rlog"
+backup_and_link "$DOTFILES_DIR/bin/setup-b200-shared-sync" "$HOME/.local/bin/setup-b200-shared-sync"
+
 mkdir -p "$HOME/.config/opencode"
 backup_and_link "$DOTFILES_DIR/opencode/opencode.json" "$HOME/.config/opencode/opencode.json"
 
