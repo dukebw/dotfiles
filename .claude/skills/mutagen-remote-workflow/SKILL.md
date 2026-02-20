@@ -30,6 +30,8 @@ Set up a local editing + remote build/execution workflow using Mutagen file sync
 mutagen project start          # Start sync from mutagen.yml
 r ./bazelw build //path:target  # Run command remotely (flushes first)
 rexec hostname                 # Run command remotely (no flush)
+setup-b200-shared-sync         # Ensure remote->local shared sync exists
+rlog --label smoke -- /bin/echo "hello"  # Run remote cmd + mirror logs locally
 ```
 
 ## Key Files
@@ -39,6 +41,10 @@ rexec hostname                 # Run command remotely (no flush)
 | `~/work/modular/mutagen.yml` | Declarative Mutagen sync config |
 | `~/.local/bin/rexec` | Remote execution helper (Python) |
 | `~/.local/bin/r` | Wrapper: flush + rexec |
+| `~/.local/bin/rlog` | Remote command runner with mirrored logs |
+| `~/.local/bin/setup-b200-shared-sync` | Creates/repairs shared remote->local Mutagen sync |
+| `/home/ubuntu/shared/logs` | Remote log root (source of mirrored logs) |
+| `~/shared/b200-hydra/logs` | Local mirrored log root |
 | `~/.ssh/config` | SSH multiplexing config |
 
 ## Prerequisites
@@ -189,6 +195,27 @@ r ./bazelw build //path:target  # Flushes + executes remotely
 
 This is the recommended way to run remote commands - ensures your local changes are synced before the command runs.
 
+### 6. rlog (Remote command + local mirrored logs)
+
+Use `rlog` when you want remote command logs/artifacts to show up locally
+without manual `scp`.
+
+One-time setup (idempotent):
+```bash
+setup-b200-shared-sync
+```
+
+Run command and mirror logs:
+```bash
+rlog --label deepseek -- ./bazelw run --config=disable-lint //max/tests/integration/tools:generate_llm_logits -- \
+  --framework max --pipeline deepseek-ai/DeepSeek-R1 --device gpu:0,1,2,3,4,5,6,7 \
+  --encoding float8_e4m3fn --output /home/ubuntu/shared/logs/deepseek/output.json
+```
+
+`rlog` writes remote logs under `/home/ubuntu/shared/logs/<label>/<run-id>/` and
+waits for the mirrored local log under
+`~/shared/b200-hydra/logs/<label>/<run-id>/`.
+
 ## Daily Commands Reference
 
 ### Mutagen Project Mode
@@ -211,6 +238,14 @@ rexec ./bazelw test //path:target    # Exec without flush
 rexec --flush ./bazelw run //...     # Explicit flush + exec
 rexec -q hostname | cat              # Pipeline-safe (no header)
 rexec --tty python                   # Interactive REPL
+```
+
+### Remote Logs (Mirrored)
+
+```bash
+setup-b200-shared-sync                 # Create/resume shared r2l sync
+rlog --label smoke -- /bin/echo hi     # Run remote command + mirror log locally
+mutagen sync list b200-hydra-shared-r2l
 ```
 
 ### Zellij
@@ -250,6 +285,13 @@ Force a flush before execution:
 r ./bazelw build //...  # Wrapper auto-flushes
 # or
 rexec --flush ./bazelw build //...
+```
+
+### Logs not appearing locally
+Verify the shared remote->local sync session and force a flush:
+```bash
+mutagen sync list b200-hydra-shared-r2l
+mutagen sync flush b200-hydra-shared-r2l
 ```
 
 ## Advanced: Multi-Workspace with Git Worktrees
