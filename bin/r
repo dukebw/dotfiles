@@ -1,4 +1,26 @@
 #!/usr/bin/env bash
-# r - Run remote with auto-flush.
-# Convenience wrapper: flushes Mutagen sync, then executes via rexec.
+set -euo pipefail
+
+# r - Run remote with auto-flush and local latest log capture.
+# Convenience wrapper: flushes Mutagen sync, executes via rexec, and mirrors
+# stdout/stderr to a local "latest" log file that is overwritten each run.
+
+if [[ $# -eq 0 ]]; then
+  echo "Usage: r <command> [args...]" >&2
+  exit 2
+fi
+
+# Default alongside rlog's local mirrored outputs.
+DEFAULT_LOG_DIR="${R_SHARED_LOG_ROOT:-$HOME/shared/b200-hydra/logs/r}"
+LATEST_LOG="${R_LATEST_LOG:-$DEFAULT_LOG_DIR/latest.log}"
+
+mkdir -p "$(dirname "$LATEST_LOG")"
+: > "$LATEST_LOG"
+
+echo "r: logging stdout/stderr to $LATEST_LOG" >&2
+
+exec 3>&1 4>&2
+exec > >(tee "$LATEST_LOG" >&3)
+exec 2> >(tee -a "$LATEST_LOG" >&4)
+
 exec rexec --flush "$@"
