@@ -245,9 +245,9 @@ def execute(host: str, workdir: str, command: list[str], shell_mode: bool = Fals
     """Execute a command on the remote host."""
     # Build the command string
     if shell_mode:
-        # Shell mode: wrap in bash -lc
+        # Shell mode: wrap in non-login bash to avoid profile banners.
         cmd_str = command[0] if len(command) == 1 else " ".join(command)
-        remote_cmd = f"cd {workdir} && bash -lc {shlex.quote(cmd_str)}"
+        remote_cmd = f"cd {workdir} && bash -c {shlex.quote(cmd_str)}"
     else:
         # Argv mode: proper escaping
         cmd_str = " ".join(shlex.quote(arg) for arg in command)
@@ -257,7 +257,11 @@ def execute(host: str, workdir: str, command: list[str], shell_mode: bool = Fals
         print_header(host, workdir, cmd_str)
 
     # Build SSH command (multiplexing handled by ~/.ssh/config)
-    ssh_cmd = ["ssh"]
+    ssh_cmd = [
+        "ssh",
+        "-o",
+        "SetEnv=LANG=C.UTF-8 LC_ALL=C.UTF-8",
+    ]
     # Allocate a PTY when stdin is a terminal (even without --tty) so that
     # Ctrl+C propagates as SIGINT to the remote process.  Without a PTY the
     # remote side has no controlling terminal and interrupt signals are lost.
