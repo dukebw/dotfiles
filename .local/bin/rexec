@@ -20,7 +20,6 @@ Examples:
 """
 
 import argparse
-import os
 import shlex
 import subprocess
 import sys
@@ -40,24 +39,9 @@ NC = "\033[0m"
 DEFAULT_REMOTE = "b200-hydra.coder"
 DEFAULT_WORKDIR = "/home/ubuntu/work/modular"
 
-# Worktree to remote mapping (host, workdir)
-WORKTREE_MAPPINGS = {
-    Path.home() / "work" / "modular": ("b200-hydra.coder", "/home/ubuntu/work/modular"),
-    Path.home() / "work" / "modular-bisect-mistral": (
-        "b200-hydra.coder",
-        "/home/ubuntu/work/modular-bisect-mistral",
-    ),
-    Path.home() / "work" / "modular-mlir-context": (
-        "b200-hydra.coder",
-        "/home/ubuntu/work/modular-mlir-context",
-    ),
-    Path.home() / "work" / "modular-kbench-bisect": (
-        "b200-hydra-2.coder",
-        "/home/ubuntu/work/modular-kbench-bisect",
-    ),
-    # Add more mappings as needed:
-    # Path.home() / "work" / "modular-feature-x": ("gcore-h100.coder", "/home/ubuntu/work/modular"),
-}
+# Optional explicit worktree overrides (host, workdir).
+# Most setups should rely on automatic mutagen.yml detection instead.
+WORKTREE_MAPPINGS: dict[Path, tuple[str, str] | str] = {}
 
 
 def eprint(*args, **kwargs):
@@ -86,6 +70,11 @@ def detect_remote_from_cwd() -> tuple[str, str]:
             if isinstance(mapping, tuple):
                 return mapping
             return mapping, DEFAULT_WORKDIR
+
+        mutagen_mapping = _detect_remote_from_mutagen_config(path)
+        if mutagen_mapping is not None:
+            return mutagen_mapping
+
     return DEFAULT_REMOTE, DEFAULT_WORKDIR
 
 
@@ -94,6 +83,115 @@ def normalize_host(host: str) -> str:
     if not host.endswith(".coder"):
         return f"{host}.coder"
     return host
+
+
+def _parse_yaml_scalar(raw_value: str) -> str:
+    """Parse a simple YAML scalar value from an inline key/value pair."""
+    value = raw_value.strip()
+    if value and value[0] in ('"', "'") and value[-1] == value[0]:
+        return value[1:-1]
+    return value
+
+
+def _parse_mutagen_beta(beta: str) -> tuple[str, str] | None:
+    """Parse mutagen beta endpoint like host:/absolute/path."""
+    if ":" not in beta:
+        return None
+
+    host, workdir = beta.split(":", 1)
+    host = host.strip()
+    workdir = workdir.strip()
+    if not host or not workdir:
+        return None
+
+    if not (workdir.startswith("/") or workdir.startswith("~")):
+        return None
+
+    return normalize_host(host), workdir
+
+
+def _detect_remote_from_mutagen_config(path: Path) -> tuple[str, str] | None:
+    """Detect host/workdir by reading mutagen.yml in the current tree."""
+    config_path = path / "mutagen.yml"
+    if not config_path.exists():
+        return None
+
+    try:
+        lines = config_path.read_text().splitlines()
+    except OSError:
+        return None
+
+    in_sync = False
+    current_session: str | None = None
+    sessions: dict[str, dict[str, str]] = {}
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.strip()
+
+        if not in_sync:
+            if indent == 0 and stripped == "sync:":
+                in_sync = True
+            continue
+
+        if indent == 0:
+            break
+
+        if indent == 2 and stripped.endswith(":"):
+            section = stripped[:-1].strip()
+            current_session = None if section == "defaults" else section
+            if current_session is not None:
+                sessions.setdefault(current_session, {})
+            continue
+
+        if current_session is None:
+            continue
+
+        if indent == 4 and ":" in stripped:
+            key, raw_value = stripped.split(":", 1)
+            key = key.strip()
+            if key not in {"alpha", "beta"}:
+                continue
+            value = _parse_yaml_scalar(raw_value)
+            if value:
+                sessions[current_session][key] = value
+
+    try:
+        repo_root = path.resolve()
+    except OSError:
+        repo_root = path
+
+    for session in sessions.values():
+        alpha = session.get("alpha")
+        beta = session.get("beta")
+        if not alpha or not beta:
+            continue
+
+        alpha_path = Path(alpha).expanduser()
+        try:
+            alpha_path = alpha_path.resolve()
+        except OSError:
+            pass
+
+        if alpha_path != repo_root:
+            continue
+
+        parsed_beta = _parse_mutagen_beta(beta)
+        if parsed_beta is not None:
+            return parsed_beta
+
+    # If there is exactly one sync session, use it even without matching alpha.
+    if len(sessions) == 1:
+        only_session = next(iter(sessions.values()))
+        beta = only_session.get("beta")
+        if beta:
+            return _parse_mutagen_beta(beta)
+
+    return None
 
 
 def _find_mutagen_root() -> Path:
