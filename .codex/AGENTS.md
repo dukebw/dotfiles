@@ -16,6 +16,7 @@
 - **Free:** read-only navigation (`rg`, `git grep`, `fd/find`, AST/indexers), local builds/tests/linters/type-checks, HTTP(S) GET for docs/specs/releases/CVEs.
 - **Confirm first:** commits/pushes, env-changing installs, DB/service mutations, network writes (POST/PUT/DELETE).
 - **IAM changes:** use the `audio-cloze-iam-admin` assume-role profile (e.g., `aws --profile audio-cloze-iam-admin …`); avoid granting `iam:*` to the day-to-day CLI user.
+- **Git editor guard (OpenCode):** never launch interactive editors from git commands; use non-interactive forms (e.g., `git commit -m "..."`) and run rebase continuation as `GIT_EDITOR=true git rebase --continue`.
 
 ## Modular notes
 - Read `CLAUDE.md` in the working directory and parents up to `$MODULAR_PATH`.
