@@ -1,15 +1,47 @@
 {
-  "model": "openai/gpt-5.2-codex",
+  "model": "openai/gpt-5.3-codex",
   "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-gemini-auth@latest"],
+  "provider": {
+    "openai": {
+      "models": {
+        "gpt-5.3-codex": {
+          "options": {
+            "reasoningSummary": "detailed",
+            "reasoningEffort": "xhigh"
+          },
+          "limit": {
+            "context": 272000,
+            "output": 128000
+          }
+        }
+      }
+    },
+    "google": {
+      "models": {
+        "gemini-3.1-pro-preview-customtools": {
+          "name": "Gemini 3.1 Pro Preview (customtools)"
+        },
+        "gemini-3.1-pro-preview": {
+          "name": "Gemini 3.1 Pro Preview"
+        }
+      },
+      "options": {
+        "timeout": 600000
+      }
+    }
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 16000
+  },
   "permission": "allow",
-  "keybinds": {
-    "leader": "ctrl+x",
-    "messages_half_page_up": "ctrl+u",
-    "messages_half_page_down": "ctrl+d",
-    "messages_first": "<leader>g",
-    "messages_last": "<leader>shift+g",
-    "session_parent": "<leader>p",
-    "session_child_cycle": "<leader>right"
+  "mcp": {
+    "linear": {
+      "type": "remote",
+      "url": "https://mcp.linear.app/mcp"
+    }
   },
   "lsp": {
     "pyright": {
