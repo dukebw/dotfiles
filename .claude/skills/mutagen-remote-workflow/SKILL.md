@@ -128,6 +128,8 @@ sync:
         - "**/.venv"
         - "**/*.venv"
         - ".DS_Store"
+        - "/compile_commands.json"
+        - "/tablegen_compile_commands.yml"
 
   modular:
     alpha: "/Users/bduke/work/modular"
@@ -187,13 +189,25 @@ Notes:
 
 ### 5. r Wrapper (Recommended)
 
-`~/.local/bin/r` is a simple wrapper that flushes Mutagen before running rexec:
+`~/.local/bin/r` is a wrapper that flushes Mutagen before running rexec:
 
 ```bash
 r ./bazelw build //path:target  # Flushes + executes remotely
 ```
 
-This is the recommended way to run remote commands - ensures your local changes are synced before the command runs.
+It also mirrors both stdout/stderr to a local `latest` log file (overwritten
+on each run). By default, it lives alongside `rlog`'s local mirrored outputs:
+
+```bash
+${R_SHARED_LOG_ROOT:-~/shared/b200-hydra/logs/r}/latest.log
+```
+
+You can override the exact log file path with
+`R_LATEST_LOG=/path/to/file.log`.
+
+This is the recommended way to run remote commands. It ensures your local
+changes are synced before the command runs and gives you one stable place to
+inspect the latest remote output.
 
 ### 6. rlog (Remote command + local mirrored logs)
 
