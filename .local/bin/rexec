@@ -20,20 +20,22 @@ Examples:
 """
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 # Colors (stderr only)
-RED = "\033[0;31m"
-GREEN = "\033[0;32m"
-YELLOW = "\033[0;33m"
-BLUE = "\033[0;34m"
-CYAN = "\033[0;36m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-NC = "\033[0m"
+USE_COLOR = sys.stderr.isatty() or os.environ.get("REXEC_FORCE_COLOR") == "1"
+RED = "\033[0;31m" if USE_COLOR else ""
+GREEN = "\033[0;32m" if USE_COLOR else ""
+YELLOW = "\033[0;33m" if USE_COLOR else ""
+BLUE = "\033[0;34m" if USE_COLOR else ""
+CYAN = "\033[0;36m" if USE_COLOR else ""
+BOLD = "\033[1m" if USE_COLOR else ""
+DIM = "\033[2m" if USE_COLOR else ""
+NC = "\033[0m" if USE_COLOR else ""
 
 # Configuration
 DEFAULT_REMOTE = "b200-hydra.coder"

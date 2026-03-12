@@ -59,9 +59,14 @@ mkdir -p "$HOME/.local/bin"
 backup_and_link "$DOTFILES_DIR/bin/r" "$HOME/.local/bin/r"
 backup_and_link "$DOTFILES_DIR/bin/rlog" "$HOME/.local/bin/rlog"
 backup_and_link "$DOTFILES_DIR/bin/setup-b200-shared-sync" "$HOME/.local/bin/setup-b200-shared-sync"
+backup_and_link "$DOTFILES_DIR/.local/bin/pydebug-setup" "$HOME/.local/bin/pydebug-setup"
+backup_and_link "$DOTFILES_DIR/.local/bin/rexec" "$HOME/.local/bin/rexec"
 
 mkdir -p "$HOME/.config/opencode"
 backup_and_link "$DOTFILES_DIR/opencode/opencode.json" "$HOME/.config/opencode/opencode.json"
+backup_and_link "$DOTFILES_DIR/opencode/plugins" "$HOME/.config/opencode/plugins"
+backup_and_link "$DOTFILES_DIR/opencode/scripts" "$HOME/.config/opencode/scripts"
+backup_and_link "$DOTFILES_DIR/opencode/tui.json" "$HOME/.config/opencode/tui.json"
 
 mkdir -p "$HOME/.claude/skills"
 for skill_dir in "$DOTFILES_DIR/.claude/skills"/*; do
