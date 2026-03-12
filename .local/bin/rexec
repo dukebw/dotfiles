@@ -262,10 +262,11 @@ def execute(host: str, workdir: str, command: list[str], shell_mode: bool = Fals
         "-o",
         "SetEnv=LANG=C.UTF-8 LC_ALL=C.UTF-8",
     ]
-    # Allocate a PTY when stdin is a terminal (even without --tty) so that
-    # Ctrl+C propagates as SIGINT to the remote process.  Without a PTY the
-    # remote side has no controlling terminal and interrupt signals are lost.
-    if tty or sys.stdin.isatty():
+    # Auto-allocate a PTY only for fully interactive use so Ctrl+C propagates
+    # as SIGINT to the remote process. When stdout/stderr are piped (for
+    # example via `r`'s tee-to-log wrapper), skip the PTY so the log captures
+    # plain text instead of terminal control sequences.
+    if tty or (sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()):
         ssh_cmd.append("-t")
     ssh_cmd.extend([host, remote_cmd])
 
