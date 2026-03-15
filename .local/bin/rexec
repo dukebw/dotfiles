@@ -20,6 +20,7 @@ Examples:
 """
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -228,6 +229,111 @@ def flush_mutagen() -> bool:
         return False
 
 
+def _workspace_name_from_host(host: str) -> str:
+    """Derive a Coder workspace name from a configured SSH host."""
+    return host[:-6] if host.endswith(".coder") else host
+
+
+def _lookup_coder_workspace(host: str) -> dict | None:
+    """Return Coder workspace metadata for the given host, if available."""
+    workspace = _workspace_name_from_host(host)
+    try:
+        result = subprocess.run(
+            ["coder", "list", "--output", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    try:
+        workspaces = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(workspaces, list):
+        return None
+
+    for entry in workspaces:
+        if isinstance(entry, dict) and entry.get("name") == workspace:
+            return entry
+    return None
+
+
+def _format_workspace_hint(workspace_info: dict | None, host: str) -> str:
+    """Build a human-readable hint for a stopped or unhealthy workspace."""
+    workspace = _workspace_name_from_host(host)
+    if workspace_info is None:
+        return (
+            f"Remote host {host} is unreachable. If this is a Coder workspace, "
+            f"check whether '{workspace}' is stopped and resume Mutagen after it "
+            "starts."
+        )
+
+    latest_build = workspace_info.get("latest_build")
+    build_status = None
+    transition = None
+    deadline = None
+    if isinstance(latest_build, dict):
+        build_status = latest_build.get("status")
+        transition = latest_build.get("transition")
+        deadline = latest_build.get("deadline")
+
+    health = workspace_info.get("health")
+    healthy = None
+    if isinstance(health, dict):
+        healthy = health.get("healthy")
+
+    parts = [f"Coder workspace '{workspace}' appears unavailable"]
+    if build_status:
+        parts.append(f"status={build_status}")
+    if transition:
+        parts.append(f"transition={transition}")
+    if healthy is False:
+        parts.append("health=unhealthy")
+    if deadline:
+        parts.append(f"deadline={deadline}")
+
+    detail = ", ".join(parts) + "."
+    return (
+        f"{detail} Start it with `coder start {workspace}` and then run "
+        "`mutagen project resume` before retrying."
+    )
+
+
+def preflight_remote(host: str) -> bool:
+    """Fail fast when the target workspace is stopped or unreachable."""
+    if os.environ.get("REXEC_SKIP_PREFLIGHT") == "1":
+        return True
+
+    check_cmd = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ConnectionAttempts=1",
+        host,
+        "true",
+    ]
+    result = subprocess.run(check_cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return True
+
+    workspace_info = _lookup_coder_workspace(host)
+    eprint(f"{RED}Remote preflight failed.{NC}")
+    eprint(_format_workspace_hint(workspace_info, host))
+    if result.stderr.strip():
+        eprint(f"{DIM}ssh: {result.stderr.strip()}{NC}")
+    return False
+
+
 def print_header(host: str, workdir: str, command: str) -> None:
     """Print a clear header indicating remote execution (to stderr)."""
     commit = get_local_git_info()
@@ -313,6 +419,9 @@ Examples:
     if not args.command:
         parser.print_help()
         sys.exit(1)
+
+    if not preflight_remote(host):
+        sys.exit(255)
 
     # Flush if requested
     if args.flush:
