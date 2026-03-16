@@ -46,7 +46,7 @@ disable-model-invocation: true
 
 對於每個主要單詞，找出 1-3 個相關詞 (同義詞、反義詞、相關詞、搭配詞)。
 
-**關鍵：在發送子代理之前，先建立完整的目標列表。**
+**關鍵：在開始搜尋之前，先建立完整的目標列表。**
 
 步驟 1 中的每個主要單詞**必須**出現在此表中。然後添加相關詞，直到總數 ≥ 2×N。
 
@@ -75,95 +75,97 @@ disable-model-invocation: true
 
 請聲明："目標列表：M 個單詞 (M ≥ 2×N = 2×__ = __) ✓"
 
-### 3. 發送子代理 (10-WAY PARALLELISM)
+### 3. 搜尋例句 (直接 WebSearch + WebFetch)
 
-使用 Task 工具搭配 `subagent_type: "vocab-card-searcher"` 來搜尋例句。
+使用 WebSearch 和 WebFetch 工具直接搜尋例句。**不要使用 Agent/Task 子代理**——直接呼叫工具更快、更可靠。
 
-**每批次發送 10 個並行子代理。**
+#### 3a. 將目標詞按主題分組
 
-對於每個目標詞，使用以下提示格式建立任務：
+將目標列表中的詞語按主題分組（例如：食物保存、排水管道、居家裝修、照明、商業經濟等）。一篇綜合性文章通常能涵蓋同主題的多個詞語。
+
+#### 3b. 批次搜尋 (每批 10 個 WebSearch 並行)
+
+每批發送 10 個並行的 WebSearch 呼叫。搜尋策略：
+
 ```
-Search and create a vocabulary card:
-- target: 主題
-- type: main
-- register: 書面
-- source_pool: news
-- source_rotation: cna
-
-**關鍵要求：同段落上下文 (SAME-PARAGRAPH CONTEXT)**
-
-找到一個包含目標詞的段落，並從該段落中提取 2-3 個連續句子。
-所有句子必須來自同一個段落，以保留語境上下文。
-
-❌ 錯誤做法：從不同文章拼湊句子
-1. 「2025台北美術獎」為國內極具指標性的視覺{{c1::藝術}}競賽...
-2. 帶大家深入台灣{{c1::藝術}}家對於空間...
-3. 2025秋天{{c1::藝術}}節將於10月17日至11月30日...
-→ 這三句來自不同文章，語境不連貫
-
-✓ 正確做法：從同一段落提取連續句子
-有民眾在社群平台發文表示，由台中餐旅分處製供的60元{{c1::便當}}已於2025年4月3日起取消供應。
-台灣高鐵公司攜手高雄空廚參加第10屆「鐵路{{c1::便當}}節」，現場銷售3款全新口味的高鐵{{c1::便當}}。
-台鐵{{c1::便當}}以排骨{{c1::便當}}為經典款，南北配菜不同。
-→ 這三句來自同一篇關於台灣便當文化的文章，上下文連貫
-
-搜尋策略：
-1. 在目標網站搜尋目標詞
-2. 找到一篇文章，其中某段落多次使用目標詞（或有足夠上下文）
-3. 提取該段落的 2-3 個連續句子
-4. 若段落只有 1-2 句，可擴展到相鄰段落，但須保持主題連貫
-
-Return JSON with: target, type, register, success, front, back, source_name, source_domain, source_url
+WebSearch 查詢格式：
+- 查詢："目標詞" 相關關鍵字
+- allowed_domains: ["cna.com.tw", "udn.com", "ltn.com.tw"] （依輪替指定）
 ```
 
-**批次執行：**
+**可靠的台灣來源（優先使用）：**
+
+| 來源 | 網域 | 類型 | 備註 |
+|------|------|------|------|
+| 中央社 | cna.com.tw | 新聞 | 穩定可擷取 |
+| 自由時報 | ltn.com.tw, food.ltn.com.tw, estate.ltn.com.tw | 新聞 | 穩定可擷取 |
+| 聯合報 | udn.com, health.udn.com, house.udn.com | 新聞 | 穩定可擷取 |
+| 公視 | pts.org.tw, news.pts.org.tw | 新聞 | 穩定可擷取 |
+| T客邦 | techbang.com | 科技 | 穩定可擷取 |
+| 經濟日報 | money.udn.com | 財經 | 穩定可擷取 |
+
+**不可靠的來源（避免直接擷取）：**
+- ptt.cc — 常回傳 403/socket error
+- dcard.tw — 常回傳 403
+- udn 部落格 (blog.udn.com) — 常回傳 403
+- forum.gamer.com.tw — 偶爾可擷取但不穩定
+
+#### 3c. 批次擷取 (每批 10 個 WebFetch 並行)
+
+從搜尋結果中挑選最有可能的文章 URL，每批發送 10 個並行的 WebFetch 呼叫。
+
+**關鍵：使用多詞提取提示**——一次擷取可涵蓋多個目標詞：
+
 ```
-批次 1：目標 1-10（透過單一訊息中的 10 個 Task 工具呼叫，並行發送全部 10 個）
-批次 2：目標 11-20
-批次 3：目標 21-30
-...
+WebFetch 提示格式：
+url: https://article-url
+prompt: 從這篇文章中，找出包含以下任何詞語的段落：詞A、詞B、詞C。
+對於每個找到的詞語，提取該段落中 2-3 個包含或圍繞該詞的連續句子。
+請標明每組句子對應的詞語。保留繁體中文原文。
 ```
 
-等待每個批次完成後再開始下一批。
+這樣一篇文章就能為同主題的 3-5 個詞語提供例句。
 
-### 4. 收集結果 & 驗證完整性
+#### 3d. 迭代補齊
 
-收集所有子代理結果。追蹤表格：
+搜尋和擷取的節奏：
+1. **第一輪**：按主題分組搜尋 → 擷取 → 清點已覆蓋的詞語
+2. **第二輪**：針對未覆蓋的詞語重新搜尋（換網站/換查詢詞）→ 擷取
+3. **第三輪**（如需要）：放寬搜尋條件（移除 `allowed_domains` 限制）
 
-| # | 目標詞 | 成功 | 來源 | 網域 |
+每輪結束後，更新追蹤表格：
+
+| # | 目標詞 | 狀態 | 來源 | 網域 |
 |---|--------|------|------|------|
-| 1 | 主題 | ✓ | 中央社 | cna |
-| 2 | 議題 | ✓ | 聯合報 | udn |
-| 3 | 阿伯 | ✓ | 巴哈姆特 | gamer |
-| ... | | | | |
+| 1 | 冷藏 | ✓ | 中央社 | cna.com.tw |
+| 2 | 冷凍 | ✓ | 元氣網 | health.udn.com |
+| 3 | 疏通蛇 | ✗ 待重試 | | |
 
-**驗證：**
-- [ ] 所有目標都回傳 success=true
-- [ ] 成功卡片總數 ≥ 2×N
-- [ ] 無單一網域 >40% 的卡片
-- [ ] 口語詞彙來自論壇，非新聞
-- [ ] 每張卡片的句子來自同一段落（檢查語境是否連貫）
+**同段落上下文要求 (SAME-PARAGRAPH CONTEXT)：**
 
-**若任何目標失敗：** 使用不同來源輪替重新發送該特定目標。
+從 WebFetch 結果中提取例句時，所有 2-3 句必須來自同一篇文章的同一段落或連續段落。
 
-**強制停止點：直到所有目標都有成功的卡片後才能繼續。**
+❌ 錯誤：從不同文章各取一句拼湊
+✓ 正確：從同一篇文章的同一段落提取 2-3 個連續句子
 
-### 5. 建立卡片 (Single Writer)
+### 4. 組裝卡片 & 驗證完整性
 
-從子代理收集所有成功的卡片資料。
+從 WebFetch 結果中組裝所有卡片。每張卡片格式：
+
+- **front（文字）**：2-3 個句子，目標詞替換為 `{{c1::目標詞}}`
+- **back（註記）**：`來源：網站名 domain\n注音：ㄅㄆㄇ\n釋義：中文定義`
 
 **最終驗證：**
-- 收集的卡片數：___
-- 目標列表大小：___
-- 主要詞彙計數 (N)：___
-- 所需最小值 (2×N)：___
 
-**所有條件必須為真：**
-- [ ] 收集的卡片數 = 目標列表大小
-- [ ] 收集的卡片數 ≥ 2×N
-- [ ] 每張卡片都有 2-3 個句子
-- [ ] **每張卡片的句子來自同一段落**（語境連貫，非拼湊）
-- [ ] 步驟 1 的每個主要詞彙至少有 1 張卡片
+| 檢查項目 | 要求 |
+|----------|------|
+| 收集的卡片數 | ≥ 2×N |
+| 每個主要詞彙至少 1 張卡片 | 35/35 |
+| 每張卡片 2-3 句 | ✓ |
+| 同段落語境連貫 | ✓ |
+| 無單一網域 >40% | ✓ |
+
+**若有目標詞仍未覆蓋：** 回到步驟 3d 重試。
 
 ---
 
@@ -226,37 +228,40 @@ DRY RUN 摘要
 
 ```python
 #!/usr/bin/env python3
-import requests
+"""Uses only stdlib (no pip dependencies required)."""
+import json
+import urllib.request
 
 CARDS = [
-    # 從子代理結果填充
-    # (front_with_cloze, back_notes),
+    # 從搜尋結果填充
+    # ("front_with_cloze", "back_notes"),
 ]
 
-def add_note(front, back):
-    r = requests.post('http://localhost:8765', json={
-        "action": "addNote",
-        "version": 6,
-        "params": {
-            "note": {
-                "deckName": "hanzi",
-                "modelName": "克漏題",
-                "fields": {"文字": front, "註記": back},
-                "options": {"allowDuplicate": False},
-                "tags": ["claude-vocab"]
-            }
-        }
-    })
-    result = r.json()
+def anki_request(action, **params):
+    payload = json.dumps({"action": action, "version": 6, "params": params})
+    req = urllib.request.Request("http://localhost:8765", data=payload.encode())
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read())
     if result.get("error"):
-        raise Exception(result["error"])
+        raise Exception(f"{action}: {result['error']}")
     return result["result"]
 
-for front, back in CARDS:
-    nid = add_note(front, back)
-    print(f"Added note {nid}")
+added = errors = 0
+for i, (front, back) in enumerate(CARDS, 1):
+    try:
+        nid = anki_request("addNote", note={
+            "deckName": "hanzi", "modelName": "克漏題",
+            "fields": {"文字": front, "註記": back},
+            "options": {"allowDuplicate": False},
+            "tags": ["claude-vocab"]
+        })
+        print(f"[{i}/{len(CARDS)}] Added (id={nid})")
+        added += 1
+    except Exception as e:
+        print(f"[{i}/{len(CARDS)}] ERROR: {e}")
+        errors += 1
 
-print(f"\n✓ Added {len(CARDS)} cards to hanzi deck")
+print(f"\n✓ Added {added} cards to hanzi deck ({errors} errors)")
 ```
 
 ---
@@ -288,5 +293,7 @@ print(f"\n✓ Added {len(CARDS)} cards to hanzi deck")
 - ❌ 「從 18 個詞彙只建立了 21 張卡片」- 未達 2× 要求
 - ❌ 搜尋了某個詞但沒有為它建立卡片
 - ❌ 在所有目標都有例句之前就進入卡片建立階段
-- ❌ 未使用完整的 10-way 並行發送子代理
+- ❌ 使用 Agent/Task 子代理搜尋例句（直接用 WebSearch + WebFetch 更快更可靠）
+- ❌ 逐詞逐篇搜尋——應按主題分組，一篇文章擷取多個詞語
+- ❌ 嘗試擷取 ptt.cc / dcard.tw / blog.udn.com（這些網站常封鎖自動擷取）
 - ❌ **從不同文章拼湊句子** - 卡片的 2-3 句必須來自同一段落，不可從多篇文章各取一句
