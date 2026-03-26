@@ -118,6 +118,7 @@ sync:
     ignore:
       vcs: true
       paths:
+        - "/.git"  # Worktrees: .git is a file, not a dir; vcs:true misses it
         - "/.derived"
         - "/bazel-*"
         - "/external"
@@ -335,6 +336,18 @@ git worktree add ../modular-feature-x feature-x
 **2. Create mutagen.yml in the worktree** with the new remote:
 ```yaml
 sync:
+  defaults:
+    mode: one-way-replica
+    ignore:
+      vcs: true
+      paths:
+        - "/.git"  # Critical: worktree .git is a file pointing to main repo; must not sync
+        - "/.derived"
+        - "/bazel-*"
+        - "/external"
+        - "**/__pycache__"
+        - ".DS_Store"
+
   modular:
     alpha: "/Users/bduke/work/modular-feature-x"
     beta: "gcore-h100.coder:/home/ubuntu/work/modular"
