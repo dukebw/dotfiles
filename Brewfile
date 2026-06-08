@@ -1,6 +1,5 @@
 # Taps
-tap "homebrew/cask-fonts"
-tap "coder/coder"
+tap "mutagen-io/mutagen"
 
 # CLI tools
 brew "fd"
@@ -17,11 +16,13 @@ brew "pipx"
 brew "wget"
 brew "curl"
 brew "less"
+brew "coder"
+brew "mutagen-io/mutagen/mutagen"
 
 # Cask apps
 cask "amethyst"
 cask "discord"
-cask "linear-linear"
+cask "linear"
 cask "xquartz"
 cask "zoom"
 cask "font-hack-nerd-font"

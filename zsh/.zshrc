@@ -103,20 +103,24 @@ source $ZSH/oh-my-zsh.sh
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
+# Homebrew
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+if command -v nvm >/dev/null 2>&1; then
+  path=("${(@)path:#$NVM_DIR/versions/node/*/bin}")
+  nvm use --silent default >/dev/null
+fi
 
 # pnpm
-export PNPM_HOME="/Users/bduke/Library/pnpm"
+export PNPM_HOME="$HOME/Library/pnpm"
 case ":$PATH:" in
   *":$PNPM_HOME:"*) ;;
   *) export PATH="$PNPM_HOME:$PATH" ;;
 esac
 # pnpm end
-
-# Homebrew
-eval "$(/opt/homebrew/bin/brew shellenv)"
 
 # pyenv
 export PYENV_ROOT="$HOME/.pyenv"
@@ -135,6 +139,7 @@ export EDITOR=nvim
 # fd alias (hidden files)
 alias fdh="fd --hidden --no-ignore"
 export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.opencode/bin:$PATH"
 
 # Remote log runner wrapper.
 rlog() {

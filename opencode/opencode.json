@@ -1,5 +1,5 @@
 {
-  "model": "openai/gpt-5.4",
+  "model": "openai/gpt-5.5-fast",
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["opencode-gemini-auth@latest"],
   "provider": {
@@ -16,6 +16,11 @@
           "options": {
             "reasoningSummary": "detailed",
             "reasoningEffort": "xhigh"
+          }
+        },
+        "gpt-5.5-fast": {
+          "options": {
+            "reasoningSummary": "detailed"
           }
         }
       }
@@ -40,12 +45,6 @@
     "reserved": 16000
   },
   "permission": "allow",
-  "mcp": {
-    "linear": {
-      "type": "remote",
-      "url": "https://mcp.linear.app/mcp"
-    }
-  },
   "lsp": {
     "pyright": {
       "disabled": true
