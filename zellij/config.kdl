@@ -131,6 +131,19 @@ keybinds {
         bind "\"" { NewPane "Down"; SwitchToMode "Normal"; }
         bind "%" { NewPane "Right"; SwitchToMode "Normal"; }
         bind "z" { ToggleFocusFullscreen; SwitchToMode "Normal"; }
+        bind "f" { ToggleFloatingPanes; SwitchToMode "Normal"; }
+        bind "F" {
+            Run "rexec" "--tty" "uvx" "--from" "nvitop" "nvitop" {
+                floating true
+                close_on_exit true
+                name "nvitop"
+                x "5%"
+                y "5%"
+                width "90%"
+                height "85%"
+            }
+            SwitchToMode "Normal";
+        }
         bind "c" { NewTab; SwitchToMode "Normal"; }
         bind "," { SwitchToMode "RenameTab"; }
         bind "p" { GoToPreviousTab; SwitchToMode "Normal"; }
