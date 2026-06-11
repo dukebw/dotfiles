@@ -127,7 +127,7 @@ kubeconfig: /path/to/kubeconfig.yaml
 namespace: baseten
 pod: brendanduke-dev-pod-b200-0
 
-local_root: /Users/brendenduke/work/baseten-ideogram4-smoke
+local_root: /Users/brendanduke/work/baseten-ideogram4-smoke
 remote_workdir: /workspace/baseten-ideogram4-smoke
 
 ssh_alias: baseten-dev-pod
@@ -135,7 +135,7 @@ ssh_host: 127.0.0.1
 ssh_local_port: 22222
 ssh_remote_port: 2222
 ssh_user: root
-ssh_key: /Users/brendenduke/.config/rexec/pod_ed25519
+ssh_key: /Users/brendanduke/.config/rexec/pod_ed25519
 
 mutagen_session: baseten-ideogram4-smoke
 
