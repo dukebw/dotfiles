@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+"""rexec - run commands in the configured Kubernetes dev pod.
+
+The transport is SSH through a localhost-only `kubectl port-forward` so Mutagen
+can sync files incrementally. Private keys and kubeconfig stay on this machine;
+the pod only receives a throwaway public key in /root/.ssh/authorized_keys.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+USE_COLOR = sys.stderr.isatty() or os.environ.get("REXEC_FORCE_COLOR") == "1"
+RED = "\033[0;31m" if USE_COLOR else ""
+GREEN = "\033[0;32m" if USE_COLOR else ""
+YELLOW = "\033[0;33m" if USE_COLOR else ""
+BLUE = "\033[0;34m" if USE_COLOR else ""
+CYAN = "\033[0;36m" if USE_COLOR else ""
+BOLD = "\033[1m" if USE_COLOR else ""
+DIM = "\033[2m" if USE_COLOR else ""
+NC = "\033[0m" if USE_COLOR else ""
+
+DEFAULT_CONFIG = Path.home() / ".config" / "rexec" / "config.yaml"
+DEFAULT_STATE_DIR = Path.home() / ".config" / "rexec"
+SSH_CONFIG = Path.home() / ".ssh" / "config"
+SSH_BEGIN = "# BEGIN rexec managed pod SSH shim"
+SSH_END = "# END rexec managed pod SSH shim"
+
+
+def eprint(*args: object, **kwargs: Any) -> None:
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def expand_path(value: str | os.PathLike[str]) -> Path:
+    return Path(os.path.expandvars(str(value))).expanduser()
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise SystemExit(
+            f"Missing rexec config: {path}\n"
+            "Create it with kubeconfig, namespace, pod, local_root, and remote_workdir."
+        )
+
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise SystemExit(f"Invalid rexec config: {path}")
+
+    cfg: dict[str, Any] = dict(raw)
+    cfg.setdefault("state_dir", str(DEFAULT_STATE_DIR))
+    cfg.setdefault("ssh_alias", "baseten-dev-pod")
+    cfg.setdefault("ssh_user", "root")
+    cfg.setdefault("ssh_host", "127.0.0.1")
+    cfg.setdefault("ssh_local_port", 22222)
+    cfg.setdefault("ssh_remote_port", 2222)
+    cfg.setdefault("ssh_key", str(DEFAULT_STATE_DIR / "pod_ed25519"))
+    cfg.setdefault("mutagen_session", "rexec-pod")
+    cfg.setdefault("ignore", [])
+
+    env_overrides = {
+        "REXEC_KUBECONFIG": "kubeconfig",
+        "REXEC_NAMESPACE": "namespace",
+        "REXEC_POD": "pod",
+        "REXEC_LOCAL_ROOT": "local_root",
+        "REXEC_WORKDIR": "remote_workdir",
+    }
+    for env_key, config_key in env_overrides.items():
+        if os.environ.get(env_key):
+            cfg[config_key] = os.environ[env_key]
+
+    required = ("kubeconfig", "namespace", "pod", "local_root", "remote_workdir")
+    missing = [key for key in required if not cfg.get(key)]
+    if missing:
+        raise SystemExit(f"Missing required rexec config keys: {', '.join(missing)}")
+
+    cfg["config_path"] = str(path)
+    cfg["state_dir"] = str(expand_path(cfg["state_dir"]))
+    cfg["kubeconfig"] = str(expand_path(cfg["kubeconfig"]))
+    cfg["local_root"] = str(expand_path(cfg["local_root"]))
+    cfg["ssh_key"] = str(expand_path(cfg["ssh_key"]))
+    cfg["ssh_local_port"] = int(cfg["ssh_local_port"])
+    cfg["ssh_remote_port"] = int(cfg["ssh_remote_port"])
+    return cfg
+
+
+def run(
+    cmd: list[str],
+    *,
+    input_text: str | None = None,
+    capture: bool = False,
+    check: bool = True,
+    quiet: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        cmd,
+        input=input_text,
+        capture_output=capture,
+        text=True,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        if capture:
+            if result.stdout:
+                eprint(result.stdout.rstrip())
+            if result.stderr:
+                eprint(result.stderr.rstrip())
+        elif not quiet:
+            eprint(f"Command failed: {shlex.join(cmd)}")
+        raise SystemExit(result.returncode)
+    return result
+
+
+def kubectl(cfg: dict[str, Any], args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    return run(["kubectl", "--kubeconfig", cfg["kubeconfig"], *args], **kwargs)
+
+
+def ensure_ssh_key(cfg: dict[str, Any]) -> None:
+    key_path = Path(cfg["ssh_key"])
+    pub_path = key_path.with_suffix(key_path.suffix + ".pub")
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    if not key_path.exists():
+        eprint(f"{BLUE}Creating local pod SSH key...{NC}")
+        run(
+            [
+                "ssh-keygen",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                "rexec pod shim",
+                "-f",
+                str(key_path),
+            ]
+        )
+    if not pub_path.exists():
+        result = run(["ssh-keygen", "-y", "-f", str(key_path)], capture=True)
+        pub_path.write_text(result.stdout, encoding="utf-8")
+
+
+def public_key(cfg: dict[str, Any]) -> str:
+    pub_path = Path(cfg["ssh_key"] + ".pub")
+    return pub_path.read_text(encoding="utf-8").strip() + "\n"
+
+
+def check_pod_running(cfg: dict[str, Any]) -> None:
+    result = kubectl(
+        cfg,
+        [
+            "get",
+            "pod",
+            "-n",
+            cfg["namespace"],
+            cfg["pod"],
+            "-o",
+            "jsonpath={.status.phase}",
+        ],
+        capture=True,
+    )
+    phase = result.stdout.strip()
+    if phase != "Running":
+        raise SystemExit(f"Pod {cfg['namespace']}/{cfg['pod']} is {phase}, not Running")
+
+
+def ensure_pod_sshd(cfg: dict[str, Any]) -> None:
+    eprint(f"{BLUE}Ensuring sshd is running in pod...{NC}", end=" ")
+    script = f"""
+set -euo pipefail
+if ! command -v sshd >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server
+fi
+mkdir -p /root/.ssh /run/sshd
+chmod 700 /root/.ssh
+touch /root/.ssh/authorized_keys
+tmp_key=$(mktemp)
+cat > "$tmp_key"
+grep -qxFf "$tmp_key" /root/.ssh/authorized_keys || cat "$tmp_key" >> /root/.ssh/authorized_keys
+rm -f "$tmp_key"
+chmod 600 /root/.ssh/authorized_keys
+ssh-keygen -A >/dev/null 2>&1 || true
+if ! pgrep -f '/usr/sbin/sshd.*-p {cfg['ssh_remote_port']}' >/dev/null 2>&1; then
+  /usr/sbin/sshd \
+    -p {cfg['ssh_remote_port']} \
+    -o PermitRootLogin=yes \
+    -o PasswordAuthentication=no \
+    -o KbdInteractiveAuthentication=no \
+    -o PubkeyAuthentication=yes \
+    -o AuthorizedKeysFile=/root/.ssh/authorized_keys
+fi
+"""
+    kubectl(
+        cfg,
+        ["exec", "-i", "-n", cfg["namespace"], cfg["pod"], "--", "bash", "-lc", script],
+        input_text=public_key(cfg),
+        capture=True,
+    )
+    eprint(f"{GREEN}done{NC}")
+
+
+def write_ssh_config(cfg: dict[str, Any]) -> None:
+    SSH_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    old = SSH_CONFIG.read_text(encoding="utf-8") if SSH_CONFIG.exists() else ""
+    block = f"""{SSH_BEGIN}
+Host {cfg['ssh_alias']}
+\tHostName {cfg['ssh_host']}
+\tPort {cfg['ssh_local_port']}
+\tUser {cfg['ssh_user']}
+\tIdentityFile {cfg['ssh_key']}
+\tIdentitiesOnly yes
+\tStrictHostKeyChecking no
+\tUserKnownHostsFile /dev/null
+\tLogLevel ERROR
+\tForwardX11 no
+\tForwardX11Trusted no
+{SSH_END}
+"""
+    pattern = re.compile(re.escape(SSH_BEGIN) + r".*?" + re.escape(SSH_END) + r"\n?", re.S)
+    if pattern.search(old):
+        new = pattern.sub(block, old)
+    else:
+        new = old.rstrip() + "\n\n" + block if old.strip() else block
+    if new != old:
+        SSH_CONFIG.write_text(new, encoding="utf-8")
+
+
+def pid_alive(pid_path: Path) -> bool:
+    if not pid_path.exists():
+        return False
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def ssh_probe(cfg: dict[str, Any], timeout_sec: int = 5) -> bool:
+    result = subprocess.run(
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={timeout_sec}",
+            cfg["ssh_alias"],
+            "true",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def wait_for_ssh(cfg: dict[str, Any], proc: subprocess.Popen[str] | None, log_path: Path) -> None:
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            raise SystemExit(f"kubectl port-forward exited early. See {log_path}")
+        if ssh_probe(cfg, timeout_sec=1):
+            eprint(f"{GREEN}done{NC}")
+            return
+        time.sleep(0.5)
+    raise SystemExit(f"Timed out waiting for SSH through port-forward. See {log_path}")
+
+
+def ensure_port_forward(cfg: dict[str, Any], *, wait: bool = True) -> None:
+    state_dir = Path(cfg["state_dir"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    pid_path = state_dir / "port-forward.pid"
+    log_path = state_dir / "port-forward.log"
+    if pid_alive(pid_path):
+        if not wait:
+            return
+        if ssh_probe(cfg, timeout_sec=2):
+            return
+        eprint(f"{BLUE}Waiting for existing kubectl port-forward...{NC}", end=" ")
+        wait_for_ssh(cfg, None, log_path)
+        return
+
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text(encoding="utf-8").strip())
+            os.kill(pid, 15)
+        except Exception:
+            pass
+        pid_path.unlink(missing_ok=True)
+
+    eprint(f"{BLUE}Starting kubectl port-forward...{NC}", end=" ")
+    log_file = open(log_path, "a", encoding="utf-8")
+    proc = subprocess.Popen(
+        [
+            "kubectl",
+            "--kubeconfig",
+            cfg["kubeconfig"],
+            "port-forward",
+            "-n",
+            cfg["namespace"],
+            f"pod/{cfg['pod']}",
+            f"{cfg['ssh_local_port']}:{cfg['ssh_remote_port']}",
+        ],
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True,
+    )
+    pid_path.write_text(str(proc.pid) + "\n", encoding="utf-8")
+
+    if wait:
+        wait_for_ssh(cfg, proc, log_path)
+    else:
+        eprint(f"{GREEN}started{NC}")
+
+
+def ensure_remote_workdir(cfg: dict[str, Any]) -> None:
+    run(["ssh", cfg["ssh_alias"], "mkdir", "-p", cfg["remote_workdir"]], quiet=True)
+
+
+def mutagen_session_exists(name: str) -> bool:
+    return subprocess.run(
+        ["mutagen", "sync", "list", name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def ensure_mutagen_session(cfg: dict[str, Any]) -> None:
+    name = cfg["mutagen_session"]
+    if mutagen_session_exists(name):
+        return
+
+    eprint(f"{BLUE}Creating Mutagen sync session {name}...{NC}")
+    cmd = [
+        "mutagen",
+        "sync",
+        "create",
+        "--name",
+        name,
+        "--mode",
+        "one-way-replica",
+        "--ignore-vcs",
+        "--symlink-mode",
+        "posix-raw",
+    ]
+    for pattern in cfg.get("ignore", []):
+        cmd.extend(["--ignore", str(pattern)])
+    cmd.extend([cfg["local_root"], f"{cfg['ssh_alias']}:{cfg['remote_workdir']}"])
+    run(cmd)
+
+
+def flush_mutagen(cfg: dict[str, Any]) -> None:
+    ensure_mutagen_session(cfg)
+    eprint(f"{BLUE}Flushing Mutagen...{NC}", end=" ")
+    result = subprocess.run(
+        ["mutagen", "sync", "flush", cfg["mutagen_session"]],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        eprint(f"{RED}failed{NC}")
+        if result.stderr.strip():
+            eprint(result.stderr.strip())
+        raise SystemExit(result.returncode)
+    eprint(f"{GREEN}done{NC}")
+
+
+def setup(cfg: dict[str, Any], *, with_mutagen: bool = True) -> None:
+    ensure_ssh_key(cfg)
+    write_ssh_config(cfg)
+    ensure_port_forward(cfg, wait=False)
+    if not ssh_probe(cfg, timeout_sec=2):
+        check_pod_running(cfg)
+        ensure_pod_sshd(cfg)
+        ensure_port_forward(cfg, wait=True)
+    ensure_remote_workdir(cfg)
+    if with_mutagen:
+        ensure_mutagen_session(cfg)
+
+
+def local_commit() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+def print_header(cfg: dict[str, Any], command: str) -> None:
+    eprint(f"{BOLD}+--------------------------------------------------------------+{NC}")
+    eprint(f"{BOLD}|{NC} {CYAN}POD EXECUTION{NC}")
+    eprint(f"{BOLD}+--------------------------------------------------------------+{NC}")
+    eprint(f"Pod:     {GREEN}{cfg['namespace']}/{cfg['pod']}{NC}")
+    eprint(f"SSH:     {GREEN}{cfg['ssh_alias']}{NC} -> localhost:{cfg['ssh_local_port']}")
+    eprint(f"Workdir: {BLUE}{cfg['remote_workdir']}{NC}")
+    eprint(f"Commit:  {DIM}{local_commit()}{NC} (local)")
+    eprint(f"Command: {YELLOW}{command}{NC}")
+    eprint(f"{BOLD}+--------------------------------------------------------------+{NC}")
+    eprint()
+
+
+def execute(cfg: dict[str, Any], command: list[str], *, shell: bool, tty: bool, quiet: bool) -> int:
+    if shell:
+        cmd_str = command[0] if len(command) == 1 else " ".join(command)
+        remote_cmd = f"cd {shlex.quote(cfg['remote_workdir'])} && bash -lc {shlex.quote(cmd_str)}"
+    else:
+        cmd_str = " ".join(shlex.quote(arg) for arg in command)
+        remote_cmd = f"cd {shlex.quote(cfg['remote_workdir'])} && {cmd_str}"
+
+    if not quiet:
+        print_header(cfg, cmd_str)
+
+    ssh_cmd = ["ssh"]
+    if tty or (sys.stdin.isatty() and sys.stdout.isatty() and sys.stderr.isatty()):
+        ssh_cmd.append("-t")
+    ssh_cmd.extend([cfg["ssh_alias"], remote_cmd])
+    return subprocess.run(ssh_cmd, check=False).returncode
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Execute commands in a Kubernetes dev pod via SSH + Mutagen.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  rexec --setup
+  r nvidia-smi
+  rexec --flush ./scripts/smoke.sh
+  rexec --shell 'ls -la | head'
+  rexec --tty bash
+""",
+    )
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Config YAML path")
+    parser.add_argument("--setup", action="store_true", help="Install/start pod SSH shim and Mutagen session")
+    parser.add_argument("--remote", "-r", help="Override configured SSH alias")
+    parser.add_argument("--shell", "-s", action="store_true", help="Run command through bash -lc")
+    parser.add_argument("--tty", "-t", action="store_true", help="Allocate a TTY")
+    parser.add_argument("--flush", "-f", action="store_true", help="Flush Mutagen before executing")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress execution header")
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to execute")
+    args = parser.parse_args()
+
+    cfg = load_config(expand_path(args.config))
+    if args.remote:
+        cfg["ssh_alias"] = args.remote
+
+    if args.setup:
+        setup(cfg, with_mutagen=True)
+        if not args.command:
+            return
+
+    if not args.command:
+        parser.print_help()
+        raise SystemExit(1)
+
+    setup(cfg, with_mutagen=args.flush)
+    if args.flush:
+        flush_mutagen(cfg)
+
+    raise SystemExit(execute(cfg, args.command, shell=args.shell, tty=args.tty, quiet=args.quiet))
+
+
+if __name__ == "__main__":
+    main()

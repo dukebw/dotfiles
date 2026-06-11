@@ -10,8 +10,8 @@ if [[ $# -eq 0 ]]; then
   exit 2
 fi
 
-# Default alongside rlog's local mirrored outputs.
-LOG_ROOT="${R_SHARED_LOG_ROOT:-$HOME/shared/b200-hydra/logs/r}"
+# Default alongside rexec's pod workflow state.
+LOG_ROOT="${R_SHARED_LOG_ROOT:-$HOME/.config/rexec/logs/r}"
 DEFAULT_LATEST_LOG="$LOG_ROOT/latest.log"
 RUN_TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_LOG="${R_LATEST_LOG:-$LOG_ROOT/history/${RUN_TIMESTAMP}-$$.log}"
