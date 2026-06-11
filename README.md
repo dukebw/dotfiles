@@ -33,7 +33,7 @@ cd ~/dotfiles && ./install.sh
 - nvm + Node.js
 - pnpm
 - Rust + cargo tools (tokei, tree-sitter-cli)
-- Coder CLI for remote development
+- Kubernetes pod remote execution with Mutagen sync
 
 ### Config Files
 - `zsh/.zshrc` - shell configuration
@@ -43,9 +43,39 @@ cd ~/dotfiles && ./install.sh
 - `ssh/config.template` - X11 forwarding for Coder
 
 ### Remote Helpers
-- `bin/r` - run remote command via `rexec --flush`
+- `bin/rexec` - run commands in a configured Kubernetes GPU dev pod over an SSH shim
+- `bin/r` - flush local changes with Mutagen, run remote command, and capture local logs
 - `bin/rlog` - run remote command and mirror logs from `/home/ubuntu/shared/logs`
 - `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
+
+## Kubernetes Pod Remote Execution
+
+The main remote loop is local editing plus remote execution in a GPU dev pod:
+
+```text
+Local editor/Git/kubeconfig
+  |
+  | Mutagen one-way sync over SSH
+  v
+Kubernetes GPU pod workdir
+  |
+  | command runs through ssh -> kubectl port-forward -> pod sshd
+  v
+stdout/stderr mirrored to local logs
+```
+
+Quick commands:
+
+```bash
+rexec --setup       # install/start pod SSH shim and Mutagen session
+r nvidia-smi        # sync then run in the pod
+rexec --tty bash    # interactive shell in the remote workdir
+```
+
+Config lives outside the repo at `~/.config/rexec/config.yaml` because it is
+machine- and pod-specific. See [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md)
+for architecture diagrams, setup, security model, config shape, and
+troubleshooting.
 
 ## Remote Log Sync
 
@@ -68,9 +98,10 @@ Logs appear locally under `~/shared/b200-hydra/logs/<label>/<run-id>/`.
 ## Manual Steps After Install
 
 1. Copy SSH keys from another machine
-2. `coder login https://rde.modular.com && coder config-ssh`
-3. iTerm2: Set font to "Hack Nerd Font Mono", style "No Title Bar"
-4. System Settings → Keyboard → Shortcuts: Set Ctrl+N for Desktop N
+2. Create `~/.config/rexec/config.yaml` for the current Kubernetes dev pod
+3. Run `rexec --setup` from the local repo you want synced
+4. iTerm2: Set font to "Hack Nerd Font Mono", style "No Title Bar"
+5. System Settings -> Keyboard -> Shortcuts: Set Ctrl+N for Desktop N
 
 ## Neovim
 

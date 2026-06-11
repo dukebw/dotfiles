@@ -1,384 +1,212 @@
 ---
 name: mutagen-remote-workflow
-description: Set up local editing + remote build workflow using Mutagen file sync with Coder workspaces. Includes the `rexec` helper script for running commands on remote machines. Use when the user mentions rexec, mutagen, remote builds, Coder workspaces, or syncing files to a remote GPU server.
+description: Set up or use the `r`/`rexec` Kubernetes GPU pod workflow with Mutagen sync, SSH over kubectl port-forward, and local-only credentials. Use when the user mentions rexec, r, mutagen, remote builds, GPU dev pods, kubectl exec, or syncing files to a Kubernetes pod.
 ---
 
 # Mutagen Remote Workflow Setup
 
-Set up a local editing + remote build/execution workflow using Mutagen file sync. This enables:
-- **Local neovim editing** (no SSH latency on keystrokes)
-- **Remote build execution** (bazel, GPU tests on Coder workspaces)
-- **Automatic file sync** between local and remote
+Use this skill when working with the dotfiles `r`/`rexec` workflow.
+
+The current workflow targets Kubernetes GPU dev pods, not Coder workspaces.
+Do not put private SSH keys, GitHub tokens, or kubeconfig files on the pod.
 
 ## Architecture
 
-```
-┌─────────────────────┐         Mutagen Sync         ┌─────────────────────┐
-│   Local MacBook     │ ◄───────────────────────────►│  Coder Workspace    │
-│                     │      (one-way-replica)       │                     │
-│ ~/work/modular      │                              │ ~/work/modular      │
-│ - neovim (local)    │                              │ - ./bazelw build    │
-│ - AI agent (local)  │                              │ - GPU execution     │
-│ - git (local)       │                              │ - nvitop monitoring │
-└─────────────────────┘                              └─────────────────────┘
+```text
+                         Kubernetes API
+                  kubectl exec / port-forward
+                +---------------------------+
+                |                           |
++---------------v---------------+     +-----v---------------------------+
+| Local MacBook                 |     | Kubernetes GPU dev pod          |
+|                               |     |                                 |
+| Editor, Git, GitHub auth      |     | Docker, GPUs, build/test tools   |
+| kubeconfig                    |     | sshd on localhost-only tunnel    |
+| SSH private key               |     | authorized_keys has public key   |
+| Mutagen daemon                |     | synced working tree              |
++---------------+---------------+     +----------------+----------------+
+                |                                      ^
+                | SSH to 127.0.0.1:<local port>        |
+                +--------------------------------------+
+                       kubectl port-forward to pod
 ```
 
-## Quick Start (TL;DR)
+Execution flow:
 
-```bash
-# In ~/work/modular
-mutagen project start          # Start sync from mutagen.yml
-r ./bazelw build //path:target  # Run command remotely (flushes first)
-rexec hostname                 # Run command remotely (no flush)
-setup-b200-shared-sync         # Ensure remote->local shared sync exists
-rlog --label smoke -- /bin/echo "hello"  # Run remote cmd + mirror logs locally
+```text
+local edit -> r -> rexec --flush -> Mutagen one-way sync -> ssh command in pod
 ```
+
+## Source Of Truth
+
+The comprehensive user-facing documentation is:
+
+```text
+docs/rexec-kubernetes-pod.md
+```
+
+Read that file before changing the workflow. Keep it updated when changing
+`bin/rexec`, `bin/r`, install behavior, config keys, or security assumptions.
 
 ## Key Files
 
 | File | Purpose |
-|------|---------|
-| `~/work/modular/mutagen.yml` | Declarative Mutagen sync config |
-| `~/.local/bin/rexec` | Remote execution helper (Python) |
-| `~/.local/bin/r` | Wrapper: flush + rexec |
-| `~/.local/bin/rlog` | Remote command runner with mirrored logs |
-| `~/.local/bin/setup-b200-shared-sync` | Creates/repairs shared remote->local Mutagen sync |
-| `/home/ubuntu/shared/logs` | Remote log root (source of mirrored logs) |
-| `~/shared/b200-hydra/logs` | Local mirrored log root |
-| `~/.ssh/config` | SSH multiplexing config |
+| --- | --- |
+| `bin/rexec` | Python CLI for pod setup, Mutagen sync, and remote execution. |
+| `bin/r` | Wrapper that runs `rexec --flush`, streams output, and writes logs locally. |
+| `docs/rexec-kubernetes-pod.md` | Full architecture, setup, security, and troubleshooting docs. |
+| `~/.config/rexec/config.yaml` | Local untracked pod/workdir config. |
+| `~/.config/rexec/pod_ed25519` | Local throwaway private key for the pod SSH shim. |
+| `~/.ssh/config` | Contains a managed `rexec` Host block. |
 
-## Prerequisites
+## Setup Checklist
 
-- macOS with Homebrew
-- Coder CLI configured (`coder config-ssh` already run)
-- SSH access to Coder workspace (e.g., `ssh <workspace>.coder` works)
-- Local clone of the repository
-
-## Setup Steps
-
-### 1. Install Mutagen
+1. Confirm the pod is running:
 
 ```bash
-brew install mutagen-io/mutagen/mutagen
-mutagen version  # Verify: should show 0.18.x or higher
+kubectl --kubeconfig <kubeconfig> get pod -n <namespace> <pod>
 ```
 
-### 2. SSH Multiplexing (speeds up repeated commands)
+2. Create `~/.config/rexec/config.yaml` with the kubeconfig, namespace, pod,
+   local root, remote workdir, SSH alias, local port, remote port, key path,
+   Mutagen session name, and ignore rules.
 
-Add to `~/.ssh/config`:
+3. Run setup from the local repo root:
 
-```sshconfig
-Host *.coder coder.*
-    # Speed: connection multiplexing
-    ControlMaster auto
-    ControlPath ~/.ssh/cm/%C
-    ControlPersist 10m
-
-    # Reliability
-    ServerAliveInterval 60
-    ServerAliveCountMax 10
-    TCPKeepAlive yes
-
-    # Don't pay X11 tax for every short command
-    ForwardX11 no
-    ForwardX11Trusted no
-
-    StrictHostKeyChecking no
-    ConnectTimeout 0
-```
-
-Create socket directory:
 ```bash
-mkdir -p ~/.ssh/cm
+rexec --setup
 ```
 
-Test (second command should be <0.5s):
+4. Verify execution:
+
 ```bash
-time ssh b200-hydra.coder hostname  # ~2s first time
-time ssh b200-hydra.coder hostname  # <0.5s with multiplexing
+r nvidia-smi
+rexec --quiet hostname
+rexec --shell 'pwd && ls'
 ```
 
-### 3. Mutagen Project Config
+## Config Shape
 
-Create `~/work/modular/mutagen.yml` (gitignored):
+Example config:
 
 ```yaml
-sync:
-  defaults:
-    mode: one-way-replica
-    flushOnCreate: true
+kubeconfig: /path/to/kubeconfig.yaml
+namespace: baseten
+pod: brendanduke-dev-pod-b200-0
 
-    symlink:
-      mode: posix-raw
+local_root: /Users/brendenduke/work/baseten-ideogram4-smoke
+remote_workdir: /workspace/baseten-ideogram4-smoke
 
-    permissions:
-      defaultFileMode: "0644"
-      defaultDirectoryMode: "0755"
+ssh_alias: baseten-dev-pod
+ssh_host: 127.0.0.1
+ssh_local_port: 22222
+ssh_remote_port: 2222
+ssh_user: root
+ssh_key: /Users/brendenduke/.config/rexec/pod_ed25519
 
-    ignore:
-      vcs: true
-      paths:
-        - "/.git"  # Worktrees: .git is a file, not a dir; vcs:true misses it
-        - "/.derived"
-        - "/bazel-*"
-        - "/external"
-        - "**/__pycache__"
-        - "**/.pytest_cache"
-        - "**/.mypy_cache"
-        - "**/*.pyc"
-        - "**/.venv"
-        - "**/*.venv"
-        - ".DS_Store"
-        - "/compile_commands.json"
-        - "/tablegen_compile_commands.yml"
+mutagen_session: baseten-ideogram4-smoke
 
-  modular:
-    alpha: "/Users/bduke/work/modular"
-    beta: "b200-hydra.coder:/home/ubuntu/work/modular"
+ignore:
+  - /.git
+  - /node_modules
+  - "**/__pycache__"
+  - "**/.venv"
+  - .DS_Store
 ```
 
-Start the sync:
+Supported environment overrides:
+
+| Environment variable | Config key |
+| --- | --- |
+| `REXEC_KUBECONFIG` | `kubeconfig` |
+| `REXEC_NAMESPACE` | `namespace` |
+| `REXEC_POD` | `pod` |
+| `REXEC_LOCAL_ROOT` | `local_root` |
+| `REXEC_WORKDIR` | `remote_workdir` |
+
+## Daily Commands
+
 ```bash
-cd ~/work/modular
-mutagen project start    # Start from yml
-mutagen project list     # Verify running
+r nvidia-smi
+r docker ps
+r ./scripts/smoke-test.sh
+rexec hostname
+rexec --quiet hostname
+rexec --shell 'ls -la | head'
+rexec --tty bash
+rexec --flush ./scripts/test.sh
 ```
 
-### 4. rexec - Remote Execution Tool
-
-`~/.local/bin/rexec` is a Python script that:
-- Prints a clear header to stderr (pipeline-safe)
-- Auto-detects remote host from current worktree
-- Supports `--shell` for pipes/redirects
-- Supports `--flush` to sync Mutagen before executing
-- Supports `--tty` for interactive commands
-- Supports `-q` for quiet mode (no header)
-
-**Usage:**
-```bash
-rexec hostname                          # Basic command
-rexec -q hostname                       # Quiet (no header)
-rexec --shell "ls -la | head -5"        # Shell mode (pipes work)
-rexec --flush ./bazelw test //...       # Flush Mutagen first
-rexec --tty htop                        # Interactive (allocate TTY)
-rexec -r gcore-h100 hostname            # Explicit remote override
-```
-
-### Multi-line remote commands (recommended)
-
-Use a heredoc (`<<'EOF'`) for multi-line remote shell commands. This avoids
-quote-escaping issues and keeps scripts readable.
+For multi-line remote commands, use a quoted heredoc so local variables do not
+expand unexpectedly:
 
 ```bash
-# Define once per shell session.
-run_remote() {
-  rexec --flush --shell "$(cat)"
-}
-
-run_remote <<'EOF'
+rexec --flush --shell "$(cat <<'EOF'
 set -euo pipefail
-OUT=/home/ubuntu/work/modular-scratch/example
-mkdir -p "$OUT"
-./bazelw test --config=ci //max/tests/integration:smoke
+pwd
+nvidia-smi
 EOF
+)"
 ```
 
-Notes:
-- Use `<<'EOF'` (quoted delimiter) to prevent local variable expansion.
-- `<<<` is a here-string, not a heredoc, and is not ideal for multi-line scripts.
-- Use `rexec -q` if you need pipeline-clean stdout.
+## Security Rules
 
-### 5. r Wrapper (Recommended)
-
-`~/.local/bin/r` is a wrapper that flushes Mutagen before running rexec:
-
-```bash
-r ./bazelw build //path:target  # Flushes + executes remotely
-```
-
-It also mirrors both stdout/stderr to a local `latest` log file (overwritten
-on each run). By default, it lives alongside `rlog`'s local mirrored outputs:
-
-```bash
-${R_SHARED_LOG_ROOT:-~/shared/b200-hydra/logs/r}/latest.log
-```
-
-You can override the exact log file path with
-`R_LATEST_LOG=/path/to/file.log`.
-
-This is the recommended way to run remote commands. It ensures your local
-changes are synced before the command runs and gives you one stable place to
-inspect the latest remote output.
-
-### 6. rlog (Remote command + local mirrored logs)
-
-Use `rlog` when you want remote command logs/artifacts to show up locally
-without manual `scp`.
-
-One-time setup (idempotent):
-```bash
-setup-b200-shared-sync
-```
-
-Run command and mirror logs:
-```bash
-rlog --label deepseek -- ./bazelw run --config=disable-lint //max/tests/integration/tools:generate_llm_logits -- \
-  --framework max --pipeline deepseek-ai/DeepSeek-R1 --device gpu:0,1,2,3,4,5,6,7 \
-  --encoding float8_e4m3fn --output /home/ubuntu/shared/logs/deepseek/output.json
-```
-
-`rlog` writes remote logs under `/home/ubuntu/shared/logs/<label>/<run-id>/` and
-waits for the mirrored local log under
-`~/shared/b200-hydra/logs/<label>/<run-id>/`.
-
-## Daily Commands Reference
-
-### Mutagen Project Mode
-
-```bash
-cd ~/work/modular
-mutagen project start    # Start sync session
-mutagen project list     # Show session status
-mutagen project flush    # Force immediate sync
-mutagen project pause    # Pause before large git ops
-mutagen project resume   # Resume after workspace restart
-mutagen project terminate # Stop session (keeps files)
-```
-
-### Remote Execution
-
-```bash
-r ./bazelw build //path:target       # Flush + exec (recommended)
-rexec ./bazelw test //path:target    # Exec without flush
-rexec --flush ./bazelw run //...     # Explicit flush + exec
-rexec -q hostname | cat              # Pipeline-safe (no header)
-rexec --tty python                   # Interactive REPL
-```
-
-### Remote Logs (Mirrored)
-
-```bash
-setup-b200-shared-sync                 # Create/resume shared r2l sync
-rlog --label smoke -- /bin/echo hi     # Run remote command + mirror log locally
-mutagen sync list b200-hydra-shared-r2l
-```
-
-### Zellij
-
-- `Ctrl+a 1/2/...` - Switch tabs
-- `Ctrl+a f` or `Alt+f` - Toggle floating panes
-- `Ctrl+a d` - Detach session
+- Do not copy private SSH keys to the pod.
+- Do not copy GitHub tokens or kubeconfig files to the pod.
+- Do not add `.git` to Mutagen sync.
+- Do not expose SSH with a Kubernetes `Service`; use local `kubectl port-forward`.
+- Prefer short-lived environment variables or BuildKit secrets for one-off secrets.
+- Keep `~/.config/rexec/config.yaml` untracked.
 
 ## Troubleshooting
 
-### "Scanning files" takes forever
-Large repos (10-50GB) take several minutes on first scan. This is normal.
+If zsh runs the builtin history command instead of `r`, reload `.zshrc`:
 
-### Workspace auto-stopped
-After Coder workspace restarts:
 ```bash
-cd ~/work/modular
-mutagen project resume
+source ~/.zshrc
 ```
 
-### Need to change ignores
-Edit `mutagen.yml`, then:
+If the port-forward fails, inspect:
+
 ```bash
-mutagen project terminate
-mutagen project start
+cat ~/.config/rexec/port-forward.log
 ```
 
-### SSH multiplexing not working
-Check socket exists:
+If sync is stale, flush or recreate the Mutagen session:
+
 ```bash
-ls ~/.ssh/cm/
+mutagen sync flush <mutagen_session>
+mutagen sync terminate <mutagen_session>
+rexec --setup
 ```
 
-### Sync seems stale
-Force a flush before execution:
+If the pod restarts, run:
+
 ```bash
-r ./bazelw build //...  # Wrapper auto-flushes
-# or
-rexec --flush ./bazelw build //...
+rexec --setup
 ```
 
-### Logs not appearing locally
-Verify the shared remote->local sync session and force a flush:
+## When Editing The Workflow
+
+Update all relevant places together:
+
+- `bin/rexec`
+- `bin/r`
+- `install.sh`
+- `README.md`
+- `docs/rexec-kubernetes-pod.md`
+- `.claude/skills/mutagen-remote-workflow/SKILL.md`
+
+Run at least:
+
 ```bash
-mutagen sync list b200-hydra-shared-r2l
-mutagen sync flush b200-hydra-shared-r2l
+python3 -m py_compile bin/rexec
+bash -n bin/r install.sh
 ```
 
-## Advanced: Multi-Workspace with Git Worktrees
+If a pod is available, verify:
 
-For working on multiple branches simultaneously, each synced to a different remote GPU:
-
-### Architecture
-
-```
-Local (git worktrees)                    Remotes (Coder workspaces)
-─────────────────────                    ─────────────────────────
-~/work/modular/                    ───►  b200-hydra.coder
-  (branch: main)                         ~/work/modular
-
-~/work/modular-feature-x/          ───►  gcore-h100.coder
-  (branch: feature-x)                    ~/work/modular
-```
-
-### Setup Steps
-
-**1. Create local git worktree:**
 ```bash
-cd ~/work/modular
-git worktree add ../modular-feature-x feature-x
+rexec --setup
+r nvidia-smi
 ```
-
-**2. Create mutagen.yml in the worktree** with the new remote:
-```yaml
-sync:
-  defaults:
-    mode: one-way-replica
-    ignore:
-      vcs: true
-      paths:
-        - "/.git"  # Critical: worktree .git is a file pointing to main repo; must not sync
-        - "/.derived"
-        - "/bazel-*"
-        - "/external"
-        - "**/__pycache__"
-        - ".DS_Store"
-
-  modular:
-    alpha: "/Users/bduke/work/modular-feature-x"
-    beta: "gcore-h100.coder:/home/ubuntu/work/modular"
-```
-
-**3. Update rexec worktree mappings** in `~/.local/bin/rexec`:
-```python
-WORKTREE_MAPPINGS = {
-    Path.home() / "work" / "modular": "b200-hydra.coder",
-    Path.home() / "work" / "modular-feature-x": "gcore-h100.coder",
-}
-```
-
-**4. Work in any worktree:**
-```bash
-cd ~/work/modular-feature-x
-r ./bazelw build //path:target  # Auto-routes to gcore-h100.coder
-```
-
-## Key Design Decisions
-
-1. **Declarative config**: `mutagen.yml` in repo root makes setup reproducible
-
-2. **SSH multiplexing in ~/.ssh/config**: Faster repeated commands, not managed by rexec
-
-3. **Header to stderr**: `rexec` output is pipeline-safe (`rexec -q cmd | grep foo`)
-
-4. **r wrapper**: One obvious command in PATH for "run this remotely"
-
-5. **one-way-replica**: Local is authoritative. Prevents remote build artifacts from syncing back.
-
-6. **posix-raw symlinks**: Both macOS and Linux are POSIX. Default "portable" mode breaks some symlinks.
-
-7. **Ignore build outputs**: Bazel outputs can be 10-50GB. Syncing them defeats the purpose.
