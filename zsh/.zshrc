@@ -117,8 +117,8 @@ fi
 # pnpm
 export PNPM_HOME="$HOME/Library/pnpm"
 case ":$PATH:" in
-  *":$PNPM_HOME:"*) ;;
-  *) export PATH="$PNPM_HOME:$PATH" ;;
+  *":$PNPM_HOME/bin:"*) ;;
+  *) export PATH="$PNPM_HOME/bin:$PATH" ;;
 esac
 # pnpm end
 
@@ -131,7 +131,9 @@ eval "$(pyenv init -)"
 . "$HOME/.cargo/env"
 
 # fzf
-source <(fzf --zsh)
+if [[ -o interactive && -o zle ]]; then
+  source <(fzf --zsh) 2>/dev/null
+fi
 
 # Editor
 export EDITOR=nvim
@@ -149,3 +151,5 @@ r() {
 rlog() {
   "$HOME/.local/bin/rlog" "$@"
 }
+
+alias oc=opencode
