@@ -142,6 +142,10 @@ export PATH="$HOME/.local/bin:$PATH"
 export PATH="$HOME/.opencode/bin:$PATH"
 
 # Remote log runner wrapper.
+r() {
+  "$HOME/.local/bin/r" "$@"
+}
+
 rlog() {
   "$HOME/.local/bin/rlog" "$@"
 }
