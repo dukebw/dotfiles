@@ -126,6 +126,60 @@ def kubectl(cfg: dict[str, Any], args: list[str], **kwargs: Any) -> subprocess.C
     return run(["kubectl", "--kubeconfig", cfg["kubeconfig"], *args], **kwargs)
 
 
+def kubectl_auth_hint(cfg: dict[str, Any]) -> str:
+    return (
+        "Kubernetes/Rancher auth appears to be expired. Refresh it with:\n"
+        f"  KUBECONFIG={shlex.quote(cfg['kubeconfig'])} "
+        f"kubectl get pod -n {shlex.quote(cfg['namespace'])} {shlex.quote(cfg['pod'])}\n"
+        "If prompted, choose oktaProvider. Then rerun rexec/r."
+    )
+
+
+def kubectl_auth_preflight(cfg: dict[str, Any]) -> None:
+    cmd = [
+        "kubectl",
+        "--kubeconfig",
+        cfg["kubeconfig"],
+        "get",
+        "pod",
+        "-n",
+        cfg["namespace"],
+        cfg["pod"],
+        "--request-timeout=20s",
+    ]
+    if sys.stdin.isatty():
+        eprint(f"{BLUE}Checking Kubernetes access...{NC}")
+        result = subprocess.run(cmd, check=False)
+        if result.returncode != 0:
+            eprint(kubectl_auth_hint(cfg))
+            raise SystemExit(result.returncode)
+        return
+
+    try:
+        result = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+        if isinstance(output, bytes):
+            output = output.decode(errors="replace")
+        if output.strip():
+            eprint(output.rstrip())
+        eprint(kubectl_auth_hint(cfg))
+        raise SystemExit(124) from exc
+    if result.returncode != 0:
+        if result.stdout.strip():
+            eprint(result.stdout.rstrip())
+        eprint(kubectl_auth_hint(cfg))
+        raise SystemExit(result.returncode)
+
+
 def ensure_ssh_key(cfg: dict[str, Any]) -> None:
     key_path = Path(cfg["ssh_key"])
     pub_path = key_path.with_suffix(key_path.suffix + ".pub")
@@ -201,13 +255,48 @@ if ! pgrep -f '/usr/sbin/sshd.*-p {cfg['ssh_remote_port']}' >/dev/null 2>&1; the
     -o AuthorizedKeysFile=/root/.ssh/authorized_keys
 fi
 """
-    kubectl(
-        cfg,
-        ["exec", "-i", "-n", cfg["namespace"], cfg["pod"], "--", "bash", "-lc", script],
-        input_text=public_key(cfg),
-        capture=True,
-    )
-    eprint(f"{GREEN}done{NC}")
+    cmd = [
+        "kubectl",
+        "--kubeconfig",
+        cfg["kubeconfig"],
+        "exec",
+        "-i",
+        "-n",
+        cfg["namespace"],
+        cfg["pod"],
+        "--",
+        "bash",
+        "-lc",
+        script,
+    ]
+    last_output = ""
+    for attempt in range(1, 4):
+        try:
+            result = subprocess.run(
+                cmd,
+                input=public_key(cfg),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+                timeout=90,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output = exc.stdout or ""
+            if isinstance(output, bytes):
+                output = output.decode(errors="replace")
+            last_output = output.rstrip() or "kubectl exec timed out"
+        else:
+            last_output = result.stdout.rstrip()
+            if result.returncode == 0:
+                eprint(f"{GREEN}done{NC}")
+                return
+        if attempt < 3:
+            eprint(f"{YELLOW}retrying kubectl exec ({attempt}/3)...{NC}", end=" ")
+            time.sleep(2)
+    if last_output:
+        eprint(last_output)
+    raise SystemExit("Failed to ensure sshd in pod via kubectl exec")
 
 
 def write_ssh_config(cfg: dict[str, Any]) -> None:
@@ -239,15 +328,47 @@ Host {cfg['ssh_alias']}
 def pid_alive(pid_path: Path) -> bool:
     if not pid_path.exists():
         return False
-    try:
-        pid = int(pid_path.read_text(encoding="utf-8").strip())
-    except ValueError:
+    pid = read_pid(pid_path)
+    if pid is None:
         return False
     try:
         os.kill(pid, 0)
         return True
     except OSError:
         return False
+
+
+def read_pid(pid_path: Path) -> int | None:
+    if not pid_path.exists():
+        return None
+    try:
+        return int(pid_path.read_text(encoding="utf-8").strip())
+    except ValueError:
+        return None
+
+
+def port_forward_paths(cfg: dict[str, Any]) -> tuple[Path, Path]:
+    state_dir = Path(cfg["state_dir"])
+    state_dir.mkdir(parents=True, exist_ok=True)
+    return state_dir / "port-forward.pid", state_dir / "port-forward.log"
+
+
+def stop_port_forward(cfg: dict[str, Any]) -> None:
+    pid_path, _ = port_forward_paths(cfg)
+    pid = read_pid(pid_path)
+    if pid is not None:
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    pid_path.unlink(missing_ok=True)
+
+
+def log_tail(path: Path, *, lines: int = 80) -> str:
+    if not path.exists():
+        return ""
+    data = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(data[-lines:])
 
 
 def ssh_probe(cfg: dict[str, Any], timeout_sec: int = 5) -> bool:
@@ -268,39 +389,46 @@ def ssh_probe(cfg: dict[str, Any], timeout_sec: int = 5) -> bool:
     return result.returncode == 0
 
 
-def wait_for_ssh(cfg: dict[str, Any], proc: subprocess.Popen[str] | None, log_path: Path) -> None:
+def wait_for_ssh(
+    cfg: dict[str, Any],
+    proc: subprocess.Popen[str] | None,
+    log_path: Path,
+    *,
+    fatal: bool = True,
+) -> bool:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         if proc is not None and proc.poll() is not None:
-            raise SystemExit(f"kubectl port-forward exited early. See {log_path}")
+            tail = log_tail(log_path)
+            if tail:
+                eprint(tail)
+            if fatal:
+                raise SystemExit(f"kubectl port-forward exited early. See {log_path}")
+            return False
         if ssh_probe(cfg, timeout_sec=1):
             eprint(f"{GREEN}done{NC}")
-            return
+            return True
         time.sleep(0.5)
-    raise SystemExit(f"Timed out waiting for SSH through port-forward. See {log_path}")
+    if proc is not None:
+        proc.terminate()
+    tail = log_tail(log_path)
+    if tail:
+        eprint(tail)
+    if fatal:
+        raise SystemExit(f"Timed out waiting for SSH through port-forward. See {log_path}")
+    return False
 
 
-def ensure_port_forward(cfg: dict[str, Any], *, wait: bool = True) -> None:
-    state_dir = Path(cfg["state_dir"])
-    state_dir.mkdir(parents=True, exist_ok=True)
-    pid_path = state_dir / "port-forward.pid"
-    log_path = state_dir / "port-forward.log"
+def ensure_port_forward(cfg: dict[str, Any], *, wait: bool = True, fatal: bool = True) -> bool:
+    pid_path, log_path = port_forward_paths(cfg)
     if pid_alive(pid_path):
-        if not wait:
-            return
         if ssh_probe(cfg, timeout_sec=2):
-            return
-        eprint(f"{BLUE}Waiting for existing kubectl port-forward...{NC}", end=" ")
-        wait_for_ssh(cfg, None, log_path)
-        return
+            return True
+        eprint(f"{YELLOW}Restarting stale kubectl port-forward...{NC}")
+        stop_port_forward(cfg)
 
     if pid_path.exists():
-        try:
-            pid = int(pid_path.read_text(encoding="utf-8").strip())
-            os.kill(pid, 15)
-        except Exception:
-            pass
-        pid_path.unlink(missing_ok=True)
+        stop_port_forward(cfg)
 
     eprint(f"{BLUE}Starting kubectl port-forward...{NC}", end=" ")
     log_file = open(log_path, "a", encoding="utf-8")
@@ -315,6 +443,7 @@ def ensure_port_forward(cfg: dict[str, Any], *, wait: bool = True) -> None:
             f"pod/{cfg['pod']}",
             f"{cfg['ssh_local_port']}:{cfg['ssh_remote_port']}",
         ],
+        stdin=subprocess.DEVNULL,
         stdout=log_file,
         stderr=log_file,
         start_new_session=True,
@@ -322,9 +451,10 @@ def ensure_port_forward(cfg: dict[str, Any], *, wait: bool = True) -> None:
     pid_path.write_text(str(proc.pid) + "\n", encoding="utf-8")
 
     if wait:
-        wait_for_ssh(cfg, proc, log_path)
+        return wait_for_ssh(cfg, proc, log_path, fatal=fatal)
     else:
         eprint(f"{GREEN}started{NC}")
+        return True
 
 
 def ensure_remote_workdir(cfg: dict[str, Any]) -> None:
@@ -367,29 +497,46 @@ def ensure_mutagen_session(cfg: dict[str, Any]) -> None:
 def flush_mutagen(cfg: dict[str, Any]) -> None:
     ensure_mutagen_session(cfg)
     eprint(f"{BLUE}Flushing Mutagen...{NC}", end=" ")
-    result = subprocess.run(
-        ["mutagen", "sync", "flush", cfg["mutagen_session"]],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        eprint(f"{RED}failed{NC}")
-        if result.stderr.strip():
-            eprint(result.stderr.strip())
-        raise SystemExit(result.returncode)
-    eprint(f"{GREEN}done{NC}")
+    last_stderr = ""
+    for attempt in range(1, 6):
+        result = subprocess.run(
+            ["mutagen", "sync", "flush", cfg["mutagen_session"]],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            eprint(f"{GREEN}done{NC}")
+            return
+        last_stderr = result.stderr.strip()
+        if attempt < 5:
+            eprint(f"{YELLOW}waiting for sync ({attempt}/5)...{NC}", end=" ")
+            subprocess.run(
+                ["mutagen", "sync", "resume", cfg["mutagen_session"]],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            time.sleep(2)
+
+    eprint(f"{RED}failed{NC}")
+    if last_stderr:
+        eprint(last_stderr)
+    raise SystemExit(result.returncode)
 
 
 def setup(cfg: dict[str, Any], *, with_mutagen: bool = True) -> None:
     ensure_ssh_key(cfg)
     write_ssh_config(cfg)
-    ensure_port_forward(cfg, wait=False)
     if not ssh_probe(cfg, timeout_sec=2):
+        stop_port_forward(cfg)
+        kubectl_auth_preflight(cfg)
         check_pod_running(cfg)
-        ensure_pod_sshd(cfg)
-        ensure_port_forward(cfg, wait=True)
+        if not ensure_port_forward(cfg, wait=True, fatal=False):
+            ensure_pod_sshd(cfg)
+            stop_port_forward(cfg)
+            ensure_port_forward(cfg, wait=True)
     ensure_remote_workdir(cfg)
     if with_mutagen:
         ensure_mutagen_session(cfg)
