@@ -9,6 +9,7 @@
 [core]
 	editor = nvim
 	pager = delta
+	excludesfile = /Users/brendanduke/.gitignore_global
 [blame]
 	pager = delta
 [interactive]

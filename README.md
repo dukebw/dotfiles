@@ -73,10 +73,10 @@ r nvidia-smi        # sync then run in the pod
 rexec --tty bash    # interactive shell in the remote workdir
 ```
 
-Config lives outside the repo at `~/.config/rexec/config.yaml` because it is
-machine- and pod-specific. See [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md)
-for architecture diagrams, setup, security model, config shape, and
-troubleshooting.
+Config is local-only because it is machine- and pod-specific. `rexec` uses
+`--config`, then `REXEC_CONFIG`, then the nearest `.rexec.yaml`, then
+`~/.config/rexec/config.yaml`. See [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md)
+for architecture diagrams, setup, security model, config shape, and troubleshooting.
 
 ## Baseten GPU Dev Helpers
 
@@ -116,7 +116,7 @@ Logs appear locally under `~/shared/b200-hydra/logs/<label>/<run-id>/`.
 ## Manual Steps After Install
 
 1. Copy SSH keys from another machine
-2. Create `~/.config/rexec/config.yaml` for the current Kubernetes dev pod
+2. Create `.rexec.yaml` in each synced worktree or `~/.config/rexec/config.yaml`
 3. Run `rexec --setup` from the local repo you want synced
 4. iTerm2: Set font to "Hack Nerd Font Mono", style "No Title Bar"
 5. System Settings -> Keyboard -> Shortcuts: Set Ctrl+N for Desktop N

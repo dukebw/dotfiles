@@ -32,6 +32,7 @@ DIM = "\033[2m" if USE_COLOR else ""
 NC = "\033[0m" if USE_COLOR else ""
 
 DEFAULT_CONFIG = Path.home() / ".config" / "rexec" / "config.yaml"
+PROJECT_CONFIG_NAME = ".rexec.yaml"
 DEFAULT_STATE_DIR = Path.home() / ".config" / "rexec"
 SSH_CONFIG = Path.home() / ".ssh" / "config"
 SSH_BEGIN = "# BEGIN rexec managed pod SSH shim"
@@ -44,6 +45,28 @@ def eprint(*args: object, **kwargs: Any) -> None:
 
 def expand_path(value: str | os.PathLike[str]) -> Path:
     return Path(os.path.expandvars(str(value))).expanduser()
+
+
+def find_project_config(start: Path) -> Path | None:
+    for directory in [start.resolve(), *start.resolve().parents]:
+        candidate = directory / PROJECT_CONFIG_NAME
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def resolve_config_path(config_arg: str | None) -> Path:
+    if config_arg:
+        return expand_path(config_arg)
+
+    if os.environ.get("REXEC_CONFIG"):
+        return expand_path(os.environ["REXEC_CONFIG"])
+
+    project_config = find_project_config(Path.cwd())
+    if project_config:
+        return project_config
+
+    return DEFAULT_CONFIG
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -245,7 +268,10 @@ grep -qxFf "$tmp_key" /root/.ssh/authorized_keys || cat "$tmp_key" >> /root/.ssh
 rm -f "$tmp_key"
 chmod 600 /root/.ssh/authorized_keys
 ssh-keygen -A >/dev/null 2>&1 || true
-if ! pgrep -f '/usr/sbin/sshd.*-p {cfg['ssh_remote_port']}' >/dev/null 2>&1; then
+port_open() {{
+  timeout 1 bash -c ':</dev/tcp/127.0.0.1/{cfg['ssh_remote_port']}' >/dev/null 2>&1
+}}
+if ! port_open; then
   /usr/sbin/sshd \
     -p {cfg['ssh_remote_port']} \
     -o PermitRootLogin=yes \
@@ -254,6 +280,14 @@ if ! pgrep -f '/usr/sbin/sshd.*-p {cfg['ssh_remote_port']}' >/dev/null 2>&1; the
     -o PubkeyAuthentication=yes \
     -o AuthorizedKeysFile=/root/.ssh/authorized_keys
 fi
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if port_open; then
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "sshd did not start listening on port {cfg['ssh_remote_port']}" >&2
+exit 1
 """
     cmd = [
         "kubectl",
@@ -600,7 +634,13 @@ Examples:
   rexec --tty bash
 """,
     )
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Config YAML path")
+    parser.add_argument(
+        "--config",
+        help=(
+            "Config YAML path. Defaults to $REXEC_CONFIG, then nearest "
+            f"{PROJECT_CONFIG_NAME}, then {DEFAULT_CONFIG}."
+        ),
+    )
     parser.add_argument("--setup", action="store_true", help="Install/start pod SSH shim and Mutagen session")
     parser.add_argument("--remote", "-r", help="Override configured SSH alias")
     parser.add_argument("--shell", "-s", action="store_true", help="Run command through bash -lc")
@@ -610,7 +650,7 @@ Examples:
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to execute")
     args = parser.parse_args()
 
-    cfg = load_config(expand_path(args.config))
+    cfg = load_config(resolve_config_path(args.config))
     if args.remote:
         cfg["ssh_alias"] = args.remote
 

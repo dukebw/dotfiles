@@ -55,7 +55,7 @@ Read that file before changing the workflow. Keep it updated when changing
 | `bin/rexec` | Python CLI for pod setup, Mutagen sync, and remote execution. |
 | `bin/r` | Wrapper that runs `rexec --flush`, streams output, and writes logs locally. |
 | `docs/rexec-kubernetes-pod.md` | Full architecture, setup, security, and troubleshooting docs. |
-| `~/.config/rexec/config.yaml` | Local untracked pod/workdir config. |
+| `.rexec.yaml` or `~/.config/rexec/config.yaml` | Local untracked pod/workdir config. |
 | `~/.config/rexec/pod_ed25519` | Local throwaway private key for the pod SSH shim. |
 | `~/.ssh/config` | Contains a managed `rexec` Host block. |
 
@@ -67,7 +67,7 @@ Read that file before changing the workflow. Keep it updated when changing
 kubectl --kubeconfig <kubeconfig> get pod -n <namespace> <pod>
 ```
 
-2. Create `~/.config/rexec/config.yaml` with the kubeconfig, namespace, pod,
+2. Create `.rexec.yaml` in the worktree or `~/.config/rexec/config.yaml` with the kubeconfig, namespace, pod,
    local root, remote workdir, SSH alias, local port, remote port, key path,
    Mutagen session name, and ignore rules.
 
@@ -116,8 +116,12 @@ ignore:
 
 Supported environment overrides:
 
+Config discovery order: `--config`, `REXEC_CONFIG`, nearest `.rexec.yaml`, then
+`~/.config/rexec/config.yaml`.
+
 | Environment variable | Config key |
 | --- | --- |
+| `REXEC_CONFIG` | Config file path |
 | `REXEC_KUBECONFIG` | `kubeconfig` |
 | `REXEC_NAMESPACE` | `namespace` |
 | `REXEC_POD` | `pod` |
@@ -156,7 +160,7 @@ EOF
 - Do not add `.git` to Mutagen sync.
 - Do not expose SSH with a Kubernetes `Service`; use local `kubectl port-forward`.
 - Prefer short-lived environment variables or BuildKit secrets for one-off secrets.
-- Keep `~/.config/rexec/config.yaml` untracked.
+- Keep `.rexec.yaml` and `~/.config/rexec/config.yaml` untracked.
 
 ## Troubleshooting
 

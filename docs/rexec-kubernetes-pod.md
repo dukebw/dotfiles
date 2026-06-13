@@ -68,7 +68,7 @@ The pod must not contain long-lived credentials.
 What stays local:
 
 - SSH private key: `~/.config/rexec/pod_ed25519`
-- kubeconfig: configured by `~/.config/rexec/config.yaml`
+- kubeconfig: configured by `.rexec.yaml` or `~/.config/rexec/config.yaml`
 - GitHub credentials and `gh auth`
 - Git working tree metadata, including `.git`
 
@@ -87,7 +87,7 @@ local `kubectl port-forward` process owned by the laptop session.
 | --- | --- | --- |
 | `rexec` | `bin/rexec` | Python CLI that sets up the SSH shim, creates the Mutagen session, and executes commands. |
 | `r` | `bin/r` | Bash wrapper that always flushes before execution and captures logs. |
-| Config | `~/.config/rexec/config.yaml` | Local, untracked pod/workdir/sync configuration. |
+| Config | `.rexec.yaml` or `~/.config/rexec/config.yaml` | Local, untracked pod/workdir/sync configuration. |
 | State | `~/.config/rexec/` | SSH key, port-forward PID/log, run logs. |
 | SSH alias | `~/.ssh/config` | Managed block named by `ssh_alias`, usually `baseten-dev-pod`. |
 | Mutagen session | `mutagen sync list` | One-way local-to-pod sync session. |
@@ -117,8 +117,17 @@ these requirements.
 
 ## Config File
 
-Create `~/.config/rexec/config.yaml`. This file is intentionally local and not
-tracked in dotfiles because it contains machine-specific paths and pod names.
+Create a config file. The most convenient setup for multiple worktrees is a
+project-local `.rexec.yaml` at the worktree root. Keep this file untracked with
+your global Git ignore because it contains machine-specific paths and pod names.
+For single-worktree usage, `~/.config/rexec/config.yaml` still works.
+
+`rexec` resolves config in this order:
+
+1. `--config <path>`
+2. `REXEC_CONFIG=<path>`
+3. The nearest `.rexec.yaml` found by walking upward from the current directory
+4. `~/.config/rexec/config.yaml`
 
 Example:
 
@@ -158,6 +167,7 @@ ignore:
 Environment overrides are available for one-off runs:
 
 ```bash
+REXEC_CONFIG=/tmp/other-rexec.yaml rexec --setup
 REXEC_POD=other-pod-0 r nvidia-smi
 REXEC_WORKDIR=/workspace/other-worktree rexec --shell 'pwd'
 ```
@@ -166,6 +176,7 @@ Supported overrides:
 
 | Environment variable | Config key |
 | --- | --- |
+| `REXEC_CONFIG` | Config file path |
 | `REXEC_KUBECONFIG` | `kubeconfig` |
 | `REXEC_NAMESPACE` | `namespace` |
 | `REXEC_POD` | `pod` |
@@ -183,7 +194,7 @@ rexec --setup
 Setup performs these actions:
 
 ```text
-1. Read ~/.config/rexec/config.yaml
+1. Resolve and read the rexec config
 2. Create ~/.config/rexec/pod_ed25519 if it does not exist
 3. kubectl exec into the pod
 4. Install/start openssh-server in the pod if needed
@@ -312,7 +323,8 @@ source ~/.zshrc
 
 ### `Missing rexec config`
 
-Create `~/.config/rexec/config.yaml`; see the config example above.
+Create `.rexec.yaml` in the worktree root or `~/.config/rexec/config.yaml`; see
+the config example above.
 
 ### `Pod ... is not Running`
 
@@ -351,7 +363,7 @@ rexec --setup
 
 ### SSH works but command runs in the wrong directory
 
-Check `remote_workdir` in `~/.config/rexec/config.yaml`. `rexec` always runs:
+Check `remote_workdir` in the resolved rexec config. `rexec` always runs:
 
 ```bash
 cd <remote_workdir> && <command>
