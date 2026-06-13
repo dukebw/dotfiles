@@ -58,6 +58,7 @@ backup_and_link "$DOTFILES_DIR/zellij/config.kdl" "$HOME/.config/zellij/config.k
 mkdir -p "$HOME/.local/bin"
 backup_and_link "$DOTFILES_DIR/bin/r" "$HOME/.local/bin/r"
 backup_and_link "$DOTFILES_DIR/bin/rlog" "$HOME/.local/bin/rlog"
+backup_and_link "$DOTFILES_DIR/bin/b10-gpu" "$HOME/.local/bin/b10-gpu"
 backup_and_link "$DOTFILES_DIR/bin/setup-b200-shared-sync" "$HOME/.local/bin/setup-b200-shared-sync"
 backup_and_link "$DOTFILES_DIR/.local/bin/pydebug-setup" "$HOME/.local/bin/pydebug-setup"
 backup_and_link "$DOTFILES_DIR/bin/rexec" "$HOME/.local/bin/rexec"

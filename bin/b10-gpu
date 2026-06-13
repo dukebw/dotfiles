@@ -1,0 +1,653 @@
+#!/usr/bin/env python3
+"""Baseten GPU dev-node helper.
+
+This CLI wraps the small set of Kubernetes/DCGM/rexec operations needed for
+Vultr B200 dev pods: discover schedulable nodes, inspect GPU usage, map host GPU
+processes back to pods, and move the configured rexec pod to a target node.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - smoke-tested manually on dev machines.
+    yaml = None
+
+
+DEFAULT_CONFIG = Path.home() / ".config" / "rexec" / "config.yaml"
+DEFAULT_GPU_PRODUCT = "NVIDIA-B200"
+DEFAULT_DEBUG_NAMESPACE = "default"
+
+
+class CommandError(RuntimeError):
+    pass
+
+
+def eprint(*args: object) -> None:
+    print(*args, file=sys.stderr)
+
+
+def expand_path(value: str | os.PathLike[str]) -> str:
+    return str(Path(os.path.expandvars(str(value))).expanduser())
+
+
+def run(
+    cmd: list[str],
+    *,
+    capture: bool = True,
+    check: bool = True,
+    input_text: str | None = None,
+    timeout_sec: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        cmd,
+        input=input_text,
+        capture_output=capture,
+        text=True,
+        check=False,
+        timeout=timeout_sec,
+    )
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        command = shlex.join(cmd)
+        if detail:
+            raise CommandError(f"Command failed: {command}\n{detail}")
+        raise CommandError(f"Command failed: {command}")
+    return result
+
+
+def load_rexec_config(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    if yaml is None:
+        raise CommandError("PyYAML is required to read ~/.config/rexec/config.yaml")
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise CommandError(f"Invalid rexec config: {path}")
+    return dict(raw)
+
+
+def base_context(args: argparse.Namespace) -> dict[str, Any]:
+    config_path = Path(expand_path(args.config))
+    rexec_cfg = load_rexec_config(config_path)
+    kubeconfig = args.kubeconfig or os.environ.get("KUBECONFIG") or rexec_cfg.get("kubeconfig")
+    if not kubeconfig:
+        raise CommandError(
+            "Missing kubeconfig. Pass --kubeconfig, set KUBECONFIG, or configure ~/.config/rexec/config.yaml."
+        )
+    namespace = args.namespace or rexec_cfg.get("namespace") or "baseten"
+    pod = args.pod or rexec_cfg.get("pod")
+    return {
+        "config_path": str(config_path),
+        "rexec_cfg": rexec_cfg,
+        "kubeconfig": expand_path(str(kubeconfig)),
+        "namespace": namespace,
+        "pod": pod,
+        "gpu_product": args.gpu_product,
+        "debug_namespace": args.debug_namespace,
+        "json": args.json,
+    }
+
+
+def kubectl(ctx: dict[str, Any], args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    return run(["kubectl", "--kubeconfig", ctx["kubeconfig"], *args], **kwargs)
+
+
+def kubectl_json(ctx: dict[str, Any], args: list[str]) -> Any:
+    result = kubectl(ctx, [*args, "-o", "json"], capture=True)
+    return json.loads(result.stdout)
+
+
+def is_node_ready(node: dict[str, Any]) -> bool:
+    for condition in node.get("status", {}).get("conditions", []):
+        if condition.get("type") == "Ready":
+            return condition.get("status") == "True"
+    return False
+
+
+def allocatable_gpus(node: dict[str, Any]) -> int:
+    value = node.get("status", {}).get("allocatable", {}).get("nvidia.com/gpu", "0")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def node_name(node: dict[str, Any]) -> str:
+    return node["metadata"]["name"]
+
+
+def list_assignable_nodes(ctx: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes = kubectl_json(
+        ctx,
+        ["get", "nodes", "-l", f"nvidia.com/gpu.product={ctx['gpu_product']}"],
+    ).get("items", [])
+    assignable = []
+    for node in nodes:
+        if not is_node_ready(node):
+            continue
+        if node.get("spec", {}).get("unschedulable") is True:
+            continue
+        if allocatable_gpus(node) <= 0:
+            continue
+        assignable.append(node)
+    return sorted(assignable, key=node_name)
+
+
+def resolve_node(ctx: dict[str, Any], value: str) -> str:
+    nodes = [node_name(node) for node in list_assignable_nodes(ctx)]
+    if value in nodes:
+        return value
+    matches = [name for name in nodes if name.endswith(value)]
+    if not matches:
+        raise CommandError(f"Unknown assignable {ctx['gpu_product']} node suffix/name: {value}")
+    if len(matches) > 1:
+        raise CommandError(f"Ambiguous node suffix {value}: {', '.join(matches)}")
+    return matches[0]
+
+
+def gpu_status(ctx: dict[str, Any], nodes: list[str]) -> list[dict[str, Any]]:
+    rows = []
+    for node in nodes:
+        debugger_pod = ""
+        try:
+            debugger_pod = create_node_debugger(ctx, node, status_debug_script())
+            logs = wait_for_debug_logs(ctx, debugger_pod)
+            data = parse_owner_logs(logs, {})
+            rows.append({"node": node, "gpus": data["summary"]})
+        except CommandError as exc:
+            rows.append({"node": node, "error": str(exc), "gpus": []})
+        finally:
+            if debugger_pod:
+                delete_debugger(ctx, debugger_pod)
+    return rows
+
+
+def pod_ready_summary(pod: dict[str, Any]) -> str:
+    statuses = pod.get("status", {}).get("containerStatuses", [])
+    if not statuses:
+        return "0/0"
+    ready = sum(1 for status in statuses if status.get("ready"))
+    return f"{ready}/{len(statuses)}"
+
+
+def pods_on_node(ctx: dict[str, Any], node: str) -> list[dict[str, str]]:
+    pods = kubectl_json(
+        ctx,
+        ["get", "pods", "-A", "--field-selector", f"spec.nodeName={node}"],
+    ).get("items", [])
+    rows = []
+    for pod in pods:
+        rows.append(
+            {
+                "namespace": pod.get("metadata", {}).get("namespace", ""),
+                "name": pod.get("metadata", {}).get("name", ""),
+                "phase": pod.get("status", {}).get("phase", ""),
+                "ready": pod_ready_summary(pod),
+                "node": pod.get("spec", {}).get("nodeName", ""),
+            }
+        )
+    return sorted(rows, key=lambda row: (row["namespace"], row["name"]))
+
+
+def pod_uid_map(ctx: dict[str, Any]) -> dict[str, dict[str, str]]:
+    pods = kubectl_json(ctx, ["get", "pods", "-A"]).get("items", [])
+    result: dict[str, dict[str, str]] = {}
+    for pod in pods:
+        metadata = pod.get("metadata", {})
+        uid = metadata.get("uid")
+        if uid:
+            result[uid] = {
+                "namespace": metadata.get("namespace", ""),
+                "name": metadata.get("name", ""),
+                "node": pod.get("spec", {}).get("nodeName", ""),
+            }
+    return result
+
+
+def extract_pod_uid(cgroup: str) -> str | None:
+    match = re.search(r"pod([0-9a-f]{8}[_-][0-9a-f]{4}[_-][0-9a-f]{4}[_-][0-9a-f]{4}[_-][0-9a-f]{12})", cgroup)
+    if not match:
+        return None
+    return match.group(1).replace("_", "-")
+
+
+def owner_name(cgroup: str, pods_by_uid: dict[str, dict[str, str]]) -> str:
+    uid = extract_pod_uid(cgroup)
+    if uid and uid in pods_by_uid:
+        pod = pods_by_uid[uid]
+        return f"{pod['namespace']}/{pod['name']}"
+    if "system.slice" in cgroup:
+        return "host/systemd"
+    if cgroup.startswith("0::/docker/"):
+        return "nested-docker"
+    return "unknown"
+
+
+def debug_script() -> str:
+    return r'''
+set -uo pipefail
+owner_cgroup() {
+  local pid="$1"
+  local cur="$pid"
+  local original=""
+  while [ -n "$cur" ] && [ "$cur" != "0" ]; do
+    local cg
+    cg=$(cat "/proc/$cur/cgroup" 2>/dev/null | tr '\n' ';' || true)
+    if [ -z "$original" ]; then original="$cg"; fi
+    case "$cg" in
+      *kubepods*pod*) echo "$cg"; return ;;
+    esac
+    cur=$(awk '/^PPid:/ {print $2}' "/proc/$cur/status" 2>/dev/null || true)
+  done
+  echo "$original"
+}
+
+echo "B10_GPU_SECTION|summary"
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
+  | while IFS= read -r line; do echo "B10_GPU_SUMMARY|$line"; done
+
+echo "B10_GPU_SECTION|compute"
+nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null \
+  | while IFS= read -r line; do
+      pid=$(printf '%s\n' "$line" | awk -F',' '{gsub(/^ +| +$/, "", $2); print $2}')
+      cg=$(owner_cgroup "$pid")
+      echo "B10_GPU_COMPUTE|$line|$cg"
+    done
+
+echo "B10_GPU_SECTION|handles"
+declare -A seen
+for fd in /proc/[0-9]*/fd/*; do
+  target=$(readlink "$fd" 2>/dev/null || true)
+  case "$target" in
+    /dev/nvidia*)
+      pid=${fd#/proc/}
+      pid=${pid%%/*}
+      if [ -n "${seen[$pid]:-}" ]; then continue; fi
+      seen[$pid]=1
+      cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
+      cg=$(owner_cgroup "$pid")
+      echo "B10_GPU_HANDLE|$pid|$cmdline|$cg"
+      ;;
+  esac
+done
+echo "B10_GPU_DONE"
+'''
+
+
+def status_debug_script() -> str:
+    return r'''
+set -uo pipefail
+echo "B10_GPU_SECTION|summary"
+nvidia-smi --query-gpu=index,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
+  | while IFS= read -r line; do echo "B10_GPU_SUMMARY|$line"; done
+echo "B10_GPU_DONE"
+'''
+
+
+def create_node_debugger(ctx: dict[str, Any], node: str, script: str) -> str:
+    cmd = [
+        "kubectl",
+        "--kubeconfig",
+        ctx["kubeconfig"],
+        "-n",
+        ctx["debug_namespace"],
+        "debug",
+        f"node/{node}",
+        "--image=ubuntu:22.04",
+        "--profile=sysadmin",
+        "--",
+        "chroot",
+        "/host",
+        "bash",
+        "-lc",
+        script,
+    ]
+    result = run(cmd, capture=True, check=True)
+    output = "\n".join(part for part in [result.stdout, result.stderr] if part)
+    match = re.search(r"Creating debugging pod (\S+)", output)
+    if not match:
+        raise CommandError(f"Could not determine node debugger pod name from kubectl debug output:\n{output}")
+    return match.group(1)
+
+
+def wait_for_debug_logs(ctx: dict[str, Any], pod: str, timeout_sec: int = 60) -> str:
+    deadline = time.monotonic() + timeout_sec
+    last_output = ""
+    while time.monotonic() < deadline:
+        result = kubectl(
+            ctx,
+            ["logs", "-n", ctx["debug_namespace"], pod],
+            capture=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            last_output = result.stdout
+            if "B10_GPU_DONE" in result.stdout:
+                return result.stdout
+        phase = kubectl(
+            ctx,
+            ["get", "pod", "-n", ctx["debug_namespace"], pod, "-o", "jsonpath={.status.phase}"],
+            capture=True,
+            check=False,
+        )
+        if phase.stdout.strip() in {"Succeeded", "Failed"} and last_output:
+            return last_output
+        time.sleep(1)
+    raise CommandError(f"Timed out waiting for node debugger logs from {pod}")
+
+
+def delete_debugger(ctx: dict[str, Any], pod: str) -> None:
+    kubectl(
+        ctx,
+        ["delete", "pod", "-n", ctx["debug_namespace"], pod, "--ignore-not-found=true"],
+        capture=True,
+        check=False,
+    )
+
+
+def parse_owner_logs(text: str, pods_by_uid: dict[str, dict[str, str]]) -> dict[str, Any]:
+    summary = []
+    compute = []
+    handles = []
+    for line in text.splitlines():
+        if line.startswith("B10_GPU_SUMMARY|"):
+            parts = [part.strip() for part in line.removeprefix("B10_GPU_SUMMARY|").split(",")]
+            if len(parts) >= 3:
+                summary.append(
+                    {
+                        "gpu": int(parts[0]),
+                        "memory_used_mib": int(float(parts[1])),
+                        "utilization_gpu_pct": int(float(parts[2])),
+                    }
+                )
+        elif line.startswith("B10_GPU_COMPUTE|"):
+            _, csv_row, cgroup = line.split("|", 2)
+            parts = [part.strip() for part in csv_row.split(",", 3)]
+            if len(parts) >= 4:
+                compute.append(
+                    {
+                        "gpu_uuid": parts[0],
+                        "pid": parts[1],
+                        "process_name": parts[2],
+                        "memory_used_mib": parts[3],
+                        "owner": owner_name(cgroup, pods_by_uid),
+                        "cgroup": cgroup,
+                    }
+                )
+        elif line.startswith("B10_GPU_HANDLE|"):
+            _, pid, cmdline, cgroup = line.split("|", 3)
+            handles.append(
+                {
+                    "pid": pid,
+                    "cmdline": cmdline,
+                    "owner": owner_name(cgroup, pods_by_uid),
+                    "cgroup": cgroup,
+                }
+            )
+    summary.sort(key=lambda row: row["gpu"])
+    handles.sort(key=lambda row: (row["owner"], row["cmdline"], row["pid"]))
+    return {"summary": summary, "compute": compute, "handles": handles}
+
+
+def infer_statefulset_name(pod: str) -> str:
+    match = re.match(r"^(?P<name>.+)-\d+$", pod)
+    if not match:
+        raise CommandError(f"Cannot infer StatefulSet name from pod name: {pod}")
+    return match.group("name")
+
+
+def current_pod_node(ctx: dict[str, Any], namespace: str, pod: str) -> str:
+    obj = kubectl_json(ctx, ["get", "pod", "-n", namespace, pod])
+    node = obj.get("spec", {}).get("nodeName")
+    if not node:
+        raise CommandError(f"Pod {namespace}/{pod} is not scheduled on a node")
+    return node
+
+
+def patch_statefulset_node(ctx: dict[str, Any], namespace: str, statefulset: str, node: str) -> None:
+    patch = {"spec": {"template": {"spec": {"nodeSelector": {"kubernetes.io/hostname": node}}}}}
+    kubectl(
+        ctx,
+        ["-n", namespace, "patch", "statefulset", statefulset, "--type", "merge", "-p", json.dumps(patch)],
+        capture=True,
+    )
+
+
+def wait_for_pod_on_node(ctx: dict[str, Any], namespace: str, pod: str, node: str, timeout_sec: int = 300) -> None:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        obj = kubectl_json(ctx, ["get", "pod", "-n", namespace, pod])
+        phase = obj.get("status", {}).get("phase")
+        current_node = obj.get("spec", {}).get("nodeName")
+        if phase == "Running" and current_node == node:
+            return
+        eprint(f"Waiting for {namespace}/{pod}: phase={phase}, node={current_node}")
+        time.sleep(5)
+    raise CommandError(f"Timed out waiting for {namespace}/{pod} to run on {node}")
+
+
+def rexec_setup_and_sync(config: dict[str, Any]) -> None:
+    run(["rexec", "--config", config["config_path"], "--setup"], capture=False)
+    session = config["rexec_cfg"].get("mutagen_session")
+    if not session:
+        return
+    flush = run(["mutagen", "sync", "flush", str(session)], capture=True, check=False)
+    if flush.returncode == 0:
+        return
+    eprint(f"Mutagen session {session} could not flush; recreating it")
+    run(["mutagen", "sync", "terminate", str(session)], capture=False, check=False)
+    run(["rexec", "--config", config["config_path"], "--setup"], capture=False)
+
+
+def print_nodes(ctx: dict[str, Any]) -> None:
+    rows = [node_name(node) for node in list_assignable_nodes(ctx)]
+    if ctx["json"]:
+        print(json.dumps(rows, indent=2))
+        return
+    for row in rows:
+        print(row)
+
+
+def print_status(ctx: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    if ctx["json"]:
+        print(json.dumps(rows, indent=2))
+        return
+    for node_row in rows:
+        print(node_row["node"])
+        if node_row.get("error"):
+            print(f"  error: {node_row['error']}")
+            continue
+        for gpu in node_row["gpus"]:
+            mem = gpu["memory_used_mib"]
+            util = gpu["utilization_gpu_pct"]
+            print(f"  GPU {gpu['gpu']}: {mem} MiB, {util}% util")
+
+
+def print_pods(ctx: dict[str, Any], rows: list[dict[str, str]]) -> None:
+    if ctx["json"]:
+        print(json.dumps(rows, indent=2))
+        return
+    for row in rows:
+        print(f"{row['namespace']}/{row['name']}\t{row['phase']}\t{row['ready']}\t{row['node']}")
+
+
+def print_owner(ctx: dict[str, Any], node: str, data: dict[str, Any]) -> None:
+    if ctx["json"]:
+        output = {"node": node, **data}
+        print(json.dumps(output, indent=2))
+        return
+    print(node)
+    print("GPU summary:")
+    for row in data["summary"]:
+        print(f"  GPU {row['gpu']}: {row['memory_used_mib']} MiB, {row['utilization_gpu_pct']}% util")
+    print("Compute apps:")
+    if data["compute"]:
+        for row in data["compute"]:
+            print(
+                f"  PID {row['pid']} owner={row['owner']} mem={row['memory_used_mib']} MiB process={row['process_name']}"
+            )
+    else:
+        print("  none")
+    print("Device-handle processes:")
+    for row in data["handles"]:
+        command = row["cmdline"] or "<empty cmdline>"
+        print(f"  PID {row['pid']} owner={row['owner']} command={command}")
+
+
+def cmd_nodes(args: argparse.Namespace) -> None:
+    print_nodes(base_context(args))
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    ctx = base_context(args)
+    if args.all:
+        nodes = [node_name(node) for node in list_assignable_nodes(ctx)]
+    elif args.node:
+        nodes = [resolve_node(ctx, args.node)]
+    else:
+        raise CommandError("Pass --all or a node suffix/name")
+    print_status(ctx, gpu_status(ctx, nodes))
+
+
+def cmd_pods(args: argparse.Namespace) -> None:
+    ctx = base_context(args)
+    node = resolve_node(ctx, args.node)
+    print_pods(ctx, pods_on_node(ctx, node))
+
+
+def cmd_owner(args: argparse.Namespace) -> None:
+    ctx = base_context(args)
+    node = resolve_node(ctx, args.node)
+    debugger_pod = create_node_debugger(ctx, node, debug_script())
+    try:
+        logs = wait_for_debug_logs(ctx, debugger_pod)
+        data = parse_owner_logs(logs, pod_uid_map(ctx))
+        print_owner(ctx, node, data)
+    finally:
+        delete_debugger(ctx, debugger_pod)
+
+
+def cmd_move(args: argparse.Namespace) -> None:
+    ctx = base_context(args)
+    namespace = args.pod_namespace or ctx["namespace"]
+    pod = args.move_pod or ctx.get("pod")
+    if not pod:
+        raise CommandError("Missing pod. Pass --pod or configure ~/.config/rexec/config.yaml")
+    statefulset = args.statefulset or infer_statefulset_name(pod)
+    target_node = resolve_node(ctx, args.node)
+    current_node = current_pod_node(ctx, namespace, pod)
+    if args.from_node:
+        expected_source = resolve_node(ctx, args.from_node)
+        if current_node != expected_source:
+            raise CommandError(f"Refusing move: {namespace}/{pod} is on {current_node}, not {expected_source}")
+
+    plan = {
+        "namespace": namespace,
+        "pod": pod,
+        "statefulset": statefulset,
+        "current_node": current_node,
+        "target_node": target_node,
+    }
+    if ctx["json"]:
+        print(json.dumps({"plan": plan, "dry_run": args.dry_run}, indent=2))
+    else:
+        print("Move plan:")
+        for key, value in plan.items():
+            print(f"  {key}: {value}")
+
+    if current_node == target_node:
+        print("Already on target node; no move needed.")
+        return
+    if args.dry_run:
+        print("Dry run: no changes made.")
+        return
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise CommandError("Refusing to move pod without --yes in non-interactive mode")
+        answer = input("Patch StatefulSet and recreate pod? [y/N] ").strip().lower()
+        if answer not in {"y", "yes"}:
+            raise CommandError("Aborted")
+
+    patch_statefulset_node(ctx, namespace, statefulset, target_node)
+    kubectl(ctx, ["-n", namespace, "rollout", "status", f"statefulset/{statefulset}", "--timeout=300s"], capture=False)
+    wait_for_pod_on_node(ctx, namespace, pod, target_node)
+    if args.skip_rexec:
+        print("Skipping rexec refresh by request.")
+        return
+    rexec_setup_and_sync(ctx)
+    print("Move complete.")
+
+
+def add_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="rexec config path")
+    parser.add_argument("--kubeconfig", help="Kubernetes config path")
+    parser.add_argument("--namespace", help="Default dev pod namespace")
+    parser.add_argument("--pod", help="Default rexec/dev pod name")
+    parser.add_argument("--gpu-product", default=DEFAULT_GPU_PRODUCT, help="GPU product label value")
+    parser.add_argument("--debug-namespace", default=DEFAULT_DEBUG_NAMESPACE, help="Namespace for node debug pods")
+    parser.add_argument("--json", action="store_true", help="Print JSON output")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Baseten Vultr B200 GPU dev-node helper")
+    add_common_args(parser)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    nodes = subparsers.add_parser("nodes", help="List assignable GPU nodes")
+    nodes.set_defaults(func=cmd_nodes)
+
+    status = subparsers.add_parser("status", help="Show GPU memory/utilization")
+    status.add_argument("node", nargs="?", help="Node full name or unique suffix")
+    status.add_argument("--all", action="store_true", help="Show all assignable nodes")
+    status.set_defaults(func=cmd_status)
+
+    pods = subparsers.add_parser("pods", help="List pods scheduled on a node")
+    pods.add_argument("node", help="Node full name or unique suffix")
+    pods.set_defaults(func=cmd_pods)
+
+    owner = subparsers.add_parser("owner", help="Map host GPU processes back to pods")
+    owner.add_argument("node", help="Node full name or unique suffix")
+    owner.set_defaults(func=cmd_owner)
+
+    move = subparsers.add_parser("move", help="Move the configured rexec pod to a node")
+    move.add_argument("node", help="Target node full name or unique suffix")
+    move.add_argument("--from", dest="from_node", help="Expected current node suffix/name")
+    move.add_argument("--pod", dest="move_pod", help="Pod to move; defaults to rexec config pod")
+    move.add_argument("--pod-namespace", help="Namespace for --pod; defaults to --namespace/rexec namespace")
+    move.add_argument("--statefulset", help="StatefulSet to patch; inferred from pod name by default")
+    move.add_argument("--dry-run", action="store_true", help="Print plan without changing anything")
+    move.add_argument("--yes", action="store_true", help="Do not prompt before moving")
+    move.add_argument("--skip-rexec", action="store_true", help="Do not run rexec/Mutagen refresh after move")
+    move.set_defaults(func=cmd_move)
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        eprint("Interrupted")
+        raise SystemExit(130)
+    except CommandError as exc:
+        eprint(f"error: {exc}")
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -46,6 +46,7 @@ cd ~/dotfiles && ./install.sh
 - `bin/rexec` - run commands in a configured Kubernetes GPU dev pod over an SSH shim
 - `bin/r` - flush local changes with Mutagen, run remote command, and capture local logs
 - `bin/rlog` - run remote command and mirror logs from `/home/ubuntu/shared/logs`
+- `bin/b10-gpu` - inspect Vultr B200 dev nodes, map GPU owners, and move the configured `rexec` pod
 - `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
 
 ## Kubernetes Pod Remote Execution
@@ -76,6 +77,23 @@ Config lives outside the repo at `~/.config/rexec/config.yaml` because it is
 machine- and pod-specific. See [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md)
 for architecture diagrams, setup, security model, config shape, and
 troubleshooting.
+
+## Baseten GPU Dev Helpers
+
+`b10-gpu` wraps the common Vultr B200 dev-node operations:
+
+```bash
+b10-gpu nodes
+b10-gpu status --all
+b10-gpu status f307cc291a7c
+b10-gpu pods f307cc291a7c
+b10-gpu owner f307cc291a7c
+b10-gpu move f307cc291a7c --dry-run
+```
+
+By default it reads the kubeconfig, namespace, and pod from
+`~/.config/rexec/config.yaml`. See [`docs/b10-gpu.md`](docs/b10-gpu.md) for
+command details and smoke tests.
 
 ## Remote Log Sync
 

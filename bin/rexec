@@ -396,7 +396,11 @@ def wait_for_ssh(
     *,
     fatal: bool = True,
 ) -> bool:
-    deadline = time.monotonic() + 20
+    # Kubernetes port-forward can accept the TCP connection before the SSH stream
+    # is fully usable; short probes create broken-pipe noise and can make setup
+    # look failed even though the pod-side sshd is healthy.
+    time.sleep(1)
+    deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         if proc is not None and proc.poll() is not None:
             tail = log_tail(log_path)
@@ -405,10 +409,10 @@ def wait_for_ssh(
             if fatal:
                 raise SystemExit(f"kubectl port-forward exited early. See {log_path}")
             return False
-        if ssh_probe(cfg, timeout_sec=1):
+        if ssh_probe(cfg, timeout_sec=5):
             eprint(f"{GREEN}done{NC}")
             return True
-        time.sleep(0.5)
+        time.sleep(1)
     if proc is not None:
         proc.terminate()
     tail = log_tail(log_path)
@@ -431,7 +435,7 @@ def ensure_port_forward(cfg: dict[str, Any], *, wait: bool = True, fatal: bool =
         stop_port_forward(cfg)
 
     eprint(f"{BLUE}Starting kubectl port-forward...{NC}", end=" ")
-    log_file = open(log_path, "a", encoding="utf-8")
+    log_file = open(log_path, "w", encoding="utf-8")
     proc = subprocess.Popen(
         [
             "kubectl",
