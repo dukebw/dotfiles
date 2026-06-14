@@ -117,6 +117,13 @@ def is_node_ready(node: dict[str, Any]) -> bool:
     return False
 
 
+def ready_condition(node: dict[str, Any]) -> dict[str, Any]:
+    for condition in node.get("status", {}).get("conditions", []):
+        if condition.get("type") == "Ready":
+            return condition
+    return {}
+
+
 def allocatable_gpus(node: dict[str, Any]) -> int:
     value = node.get("status", {}).get("allocatable", {}).get("nvidia.com/gpu", "0")
     try:
@@ -144,6 +151,31 @@ def list_assignable_nodes(ctx: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         assignable.append(node)
     return sorted(assignable, key=node_name)
+
+
+def no_assignable_nodes_error(ctx: dict[str, Any]) -> CommandError:
+    nodes = kubectl_json(
+        ctx,
+        ["get", "nodes", "-l", f"nvidia.com/gpu.product={ctx['gpu_product']}"],
+    ).get("items", [])
+    if not nodes:
+        return CommandError(f"No {ctx['gpu_product']} nodes found")
+
+    details = []
+    for node in sorted(nodes, key=node_name):
+        condition = ready_condition(node)
+        status = condition.get("status", "<missing>")
+        reason = condition.get("reason", "<missing>")
+        gpu_count = allocatable_gpus(node)
+        unschedulable = node.get("spec", {}).get("unschedulable") is True
+        flags = [f"Ready={status}", f"reason={reason}", f"gpu={gpu_count}"]
+        if unschedulable:
+            flags.append("unschedulable=true")
+        details.append(f"{node_name(node)} ({', '.join(flags)})")
+
+    return CommandError(
+        f"No assignable {ctx['gpu_product']} nodes found. Current candidates: " + "; ".join(details)
+    )
 
 
 def resolve_node(ctx: dict[str, Any], value: str) -> str:
@@ -439,7 +471,16 @@ def wait_for_pod_on_node(ctx: dict[str, Any], namespace: str, pod: str, node: st
     raise CommandError(f"Timed out waiting for {namespace}/{pod} to run on {node}")
 
 
+def terminate_mutagen_session(config: dict[str, Any]) -> None:
+    session = config["rexec_cfg"].get("mutagen_session")
+    if not session:
+        return
+    eprint(f"Recreating Mutagen session {session} after pod move")
+    run(["mutagen", "sync", "terminate", str(session)], capture=False, check=False)
+
+
 def rexec_setup_and_sync(config: dict[str, Any]) -> None:
+    terminate_mutagen_session(config)
     run(["rexec", "--config", config["config_path"], "--setup"], capture=False)
     session = config["rexec_cfg"].get("mutagen_session")
     if not session:
@@ -447,7 +488,7 @@ def rexec_setup_and_sync(config: dict[str, Any]) -> None:
     flush = run(["mutagen", "sync", "flush", str(session)], capture=True, check=False)
     if flush.returncode == 0:
         return
-    eprint(f"Mutagen session {session} could not flush; recreating it")
+    eprint(f"Mutagen session {session} still could not flush; recreating it again")
     run(["mutagen", "sync", "terminate", str(session)], capture=False, check=False)
     run(["rexec", "--config", config["config_path"], "--setup"], capture=False)
 
@@ -515,6 +556,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     ctx = base_context(args)
     if args.all:
         nodes = [node_name(node) for node in list_assignable_nodes(ctx)]
+        if not nodes:
+            raise no_assignable_nodes_error(ctx)
     elif args.node:
         nodes = [resolve_node(ctx, args.node)]
     else:

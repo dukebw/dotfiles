@@ -74,8 +74,9 @@ nodeSelector:
   kubernetes.io/hostname: <target-node>
 ```
 
-Then it waits for the pod to run on the target node, runs `rexec --setup`, and
-recreates the configured Mutagen session if it cannot flush after the move.
+Then it waits for the pod to run on the target node, terminates the configured
+Mutagen session, and runs `rexec --setup` to create a fresh SSH shim and one-way
+sync session for the new pod instance.
 
 Use `--from <node-suffix>` to make the command fail if the pod is not currently
 on the expected source node.
@@ -101,6 +102,11 @@ b10-gpu status --all --kubeconfig "$K"
 
 Expected: four nodes are shown, with eight GPU rows per node. Each row includes
 memory used and utilization.
+
+If all B200 nodes are filtered out, the command exits non-zero and prints the
+candidate node readiness reasons. For example, when the node controller has
+marked the nodes unreachable, the diagnostic includes `Ready=Unknown` and
+`reason=NodeStatusUnknown`.
 
 ### `b10-gpu status <node>`
 
@@ -180,4 +186,5 @@ b10-gpu move <other-free-node> --kubeconfig "$K" --yes
 ```
 
 Expected: patches the StatefulSet, waits for the pod to run on the target node,
-refreshes `rexec`, and leaves Mutagen watching the configured session.
+terminates the old configured Mutagen session, refreshes `rexec`, and leaves a
+new Mutagen session watching the configured sync.
