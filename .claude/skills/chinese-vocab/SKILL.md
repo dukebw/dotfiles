@@ -207,11 +207,44 @@ OpenCode webfetch:
 
 這樣一篇文章就能為同主題的 3-5 個詞語提供例句。
 
-#### 3d. 迭代補齊
+#### 3d. Persist Source Evidence Ledger（防 compaction 遺失）
+
+**硬性要求：每次找到可用例句後，立刻把證據寫入本機檔案。不要依賴對話上下文保存 URL 或原文。**
+
+建立或追加一個 durable ledger，路徑放在目前工作目錄或 dry-run 輸出旁邊：
+
+`anki-source-ledger-YYYYMMDD-HHMMSS.jsonl`
+
+每一列是一個 JSON object，至少包含：
+
+```json
+{"target_word":"主題","type":"main","source_name":"中央社","domain":"cna.com.tw","url":"https://www.cna.com.tw/...","fetched_at":"2026-06-14T10:30:00-07:00","verbatim_sentences":["原文第一句。","原文第二句。"],"card_front":"原文第一句，含 {{c1::主題}}。原文第二句。","notes":"同段落連續句；用於 disambiguation 的備註"}
+```
+
+欄位規則：
+
+* `target_word`：目標詞，必須精確對應目標列表
+* `type`：`main` 或 `related`
+* `source_name`：網站名稱，例如 `中央社`
+* `domain`：來源網域，例如 `cna.com.tw`
+* `url`：實際文章或頁面 URL；不可只寫網域或搜尋頁，除非搜尋頁本身就是例句來源
+* `fetched_at`：擷取時間，使用 ISO 8601；若無法取得精確時區，至少寫日期時間
+* `verbatim_sentences`：來源中逐字擷取的 2-3 個連續句；不得改寫、摘要、補句或跨文章拼接
+* `card_front`：只允許在 `verbatim_sentences` 基礎上把目標詞替換為 `{{c1::目標詞}}`；不得另寫新句子
+* `notes`：可寫搜尋別名、上下文、低命中處理或來源選擇理由
+
+覆蓋判定改為以 ledger 為準：
+
+* 只有存在 ledger row，且含真實 `url` 與 `verbatim_sentences` 的目標詞，才算 covered
+* 每個主要詞彙必須至少有 1 個 `type: "main"` 的 ledger row
+* 最終卡片必須從 ledger 組裝，不得從對話記憶、WebFetch 回傳摘要、或手寫近似句組裝
+* 若 ledger 與對話內容不一致，以 ledger 為 source of truth
+
+#### 3e. 迭代補齊
 
 搜尋和擷取的節奏：
-1. **第一輪**：按主題分組搜尋 → 擷取 → 清點已覆蓋的詞語
-2. **第二輪**：針對未覆蓋的詞語重新搜尋（換網站/換查詢詞）→ 擷取
+1. **第一輪**：按主題分組搜尋 → 擷取 → 寫入 ledger → 清點已覆蓋的詞語
+2. **第二輪**：針對未覆蓋的詞語重新搜尋（換網站/換查詢詞）→ 擷取 → 寫入 ledger
 3. **第三輪**（如需要）：放寬搜尋條件（移除 `allowed_domains` 限制）
 
 **LOW-HIT PROTOCOL（低命中詞強制流程）**
@@ -241,10 +274,10 @@ OpenCode webfetch:
 
 ### 4. 組裝卡片 & 驗證完整性
 
-從 WebFetch 結果中組裝所有卡片。每張卡片格式：
+從 Source Evidence Ledger 組裝所有卡片，不要從 WebFetch 對話輸出或記憶組裝。每張卡片格式：
 
-- **front（文字）**：2-3 個句子，目標詞替換為 `{{c1::目標詞}}`
-- **back（註記）**：`來源：網站名 domain\n注音：ㄅㄆㄇ\n釋義：中文定義`
+- **front（文字）**：ledger 的 `card_front`；必須由 `verbatim_sentences` 逐字改 cloze 而來
+- **back（註記）**：`來源：網站名 domain\nURL：完整 URL\n注音：ㄅㄆㄇ\n釋義：中文定義`
 
 **最終驗證：**
 
@@ -255,8 +288,12 @@ OpenCode webfetch:
 | 每張卡片 2-3 句 | ✓ |
 | 同段落語境連貫 | ✓ |
 | 無單一網域 >40% | ✓ |
+| 每張卡片有 ledger row | ✓ |
+| 每張卡片有完整 URL | ✓ |
 
-**若有目標詞仍未覆蓋：** 回到步驟 3d 重試。
+**若有目標詞仍未覆蓋：** 回到步驟 3e 重試。
+
+**Compaction Safety：** 在 dry-run、handoff、或任何可能被 compact 的回覆中，必須列出 ledger path、主要詞彙覆蓋數、總卡片數。對話摘要只需保存 ledger path；ledger 是 compaction 後的 source of truth。
 
 ---
 
@@ -275,7 +312,8 @@ Google表示，Android 10特色主要圍繞在創新、安全與隱私、數位�
 數位健康{{c1::主題}}則新增了專注模式，幫助用戶減少手機使用時間。
 
 註記:
-來源：中央社
+來源：中央社 cna.com.tw
+URL：https://www.cna.com.tw/news/...
 注音：ㄓㄨˇ ㄊㄧˊ
 釋義：文章或談話的中心內容
 
@@ -291,6 +329,7 @@ Card 2/36: 議題 (related) [書面 → 聯合報]
 ═══════════════════════════════════════════════════════
 DRY RUN 摘要
 ═══════════════════════════════════════════════════════
+Source Evidence Ledger：anki-source-ledger-20260614-103000.jsonl
 總卡片數：36
 主要詞彙：18
 比例：2.0× ✓
@@ -305,7 +344,7 @@ DRY RUN 摘要
   snippets:       5 張卡片 (14%) ✓
 
 所有品質閘門通過 ✓
-執行時不加 --dry-run 即可將卡片加入 Anki。
+ledger 驗證通過後，執行時不加 --dry-run 即可將卡片加入 Anki。
 ═══════════════════════════════════════════════════════
 ```
 
@@ -317,6 +356,8 @@ DRY RUN 摘要
 
 需求：Anki 正在執行，並安裝了 AnkiConnect 附加元件 (代碼：2055492159)
 
+加入前必須重新讀取 Source Evidence Ledger，確認每張卡片都有 `url`、`verbatim_sentences`、`card_front`，且 `註記` 包含完整 URL。
+
 ```python
 #!/usr/bin/env python3
 """Uses only stdlib (no pip dependencies required)."""
@@ -324,7 +365,7 @@ import json
 import urllib.request
 
 CARDS = [
-    # 從搜尋結果填充
+    # 從 Source Evidence Ledger 填充；不要從對話記憶或 WebFetch 摘要填充
     # ("front_with_cloze", "back_notes"),
 ]
 
@@ -370,7 +411,8 @@ print(f"\n✓ Added {added} cards to hanzi deck ({errors} errors)")
 * 全中文：卡片上沒有英文
 * 每張卡片 2-3 個句子 (不是 1 句)
 * **同段落要求**：所有句子必須來自同一個段落或連續段落，保持語境連貫
-* 具備出處的真實來源
+* 具備出處的真實來源、完整 URL、以及 ledger row
+* 卡片文字必須能回溯到 ledger 的 `verbatim_sentences`
 
 **來源多樣性：**
 
@@ -392,3 +434,5 @@ print(f"\n✓ Added {added} cards to hanzi deck ({errors} errors)")
 - ❌ 忽略相鄰上下文，導致技術詞或產品詞搜錯方向
 - ❌ 讓百科/字典在有其他可用來源時壟斷大部分例句
 - ❌ **從不同文章拼湊句子** - 卡片的 2-3 句必須來自同一段落，不可從多篇文章各取一句
+- ❌ 擷取到 URL 和原文後只留在對話中，沒有立即寫入 Source Evidence Ledger
+- ❌ 從記憶或摘要重寫例句，而不是從 ledger 的 `verbatim_sentences` 產生 cloze
