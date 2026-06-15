@@ -6,6 +6,7 @@
     "messages_half_page_down": "ctrl+d",
     "messages_first": "<leader>g",
     "messages_last": "<leader>shift+g",
+    "sidebar_toggle": "ctrl+b",
     "session_timeline": "<leader>shift+t",
     "session_parent": "<leader>p",
     "session_child_cycle": "<leader>right"
