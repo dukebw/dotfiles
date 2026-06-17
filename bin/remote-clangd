@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+local_root=""
+remote_root=""
+ssh_alias=""
+remote_clangd="clangd-21"
+remote_compiler="clang++-21"
+cuda_arch="sm_100a"
+cuda_path="/usr/local/cuda"
+compile_commands_dir=""
+
+usage() {
+  printf 'usage: remote-clangd --local-root PATH --remote-root PATH --ssh-alias ALIAS [options]\n' >&2
+  exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --local-root) local_root="${2:-}"; shift 2 ;;
+    --remote-root) remote_root="${2:-}"; shift 2 ;;
+    --ssh-alias) ssh_alias="${2:-}"; shift 2 ;;
+    --clangd) remote_clangd="${2:-}"; shift 2 ;;
+    --compiler) remote_compiler="${2:-}"; shift 2 ;;
+    --cuda-arch) cuda_arch="${2:-}"; shift 2 ;;
+    --cuda-path) cuda_path="${2:-}"; shift 2 ;;
+    --compile-commands-dir) compile_commands_dir="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[[ -n "$local_root" && -n "$remote_root" && -n "$ssh_alias" ]] || usage
+
+if [[ -z "$compile_commands_dir" ]]; then
+  cache_key="$(printf '%s' "$remote_root" | shasum | cut -d' ' -f1)"
+  compile_commands_dir="/tmp/remote-clangd/$cache_key"
+fi
+
+quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\''/g")"
+}
+
+remote_cmd="set -euo pipefail
+cd $(quote "$remote_root")
+mkdir -p $(quote "$compile_commands_dir")
+python3 - $(quote "$remote_root") $(quote "$compile_commands_dir") $(quote "$remote_compiler") $(quote "$cuda_path") $(quote "$cuda_arch") <<'PY'
+import json
+import os
+import sys
+
+root, build_dir, compiler, cuda_path, cuda_arch = sys.argv[1:]
+skip_dirs = {
+    '.git',
+    '.cache',
+    '.mypy_cache',
+    '.pytest_cache',
+    '.ruff_cache',
+    '.venv',
+    '__pycache__',
+    'node_modules',
+    'venv',
+}
+cuda_exts = {'.cu', '.cuh'}
+entries = []
+
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [
+        name for name in dirnames
+        if name not in skip_dirs and not name.startswith('.mutagen')
+    ]
+
+    for filename in filenames:
+        if os.path.splitext(filename)[1].lower() not in cuda_exts:
+            continue
+
+        path = os.path.join(dirpath, filename)
+        entries.append({
+            'directory': dirpath,
+            'file': path,
+            'arguments': [
+                compiler,
+                '-x', 'cuda',
+                '--cuda-path=' + cuda_path,
+                '--no-cuda-version-check',
+                '--cuda-gpu-arch=' + cuda_arch,
+                '-I' + os.path.join(cuda_path, 'include'),
+                '-std=c++17',
+                '-O3',
+                '-fPIC',
+                '-c',
+                path,
+            ],
+        })
+
+with open(os.path.join(build_dir, 'compile_commands.json'), 'w', encoding='utf-8') as f:
+    json.dump(entries, f, indent=2)
+PY
+exec $(quote "$remote_clangd") --compile-commands-dir=$(quote "$compile_commands_dir") --path-mappings=$(quote "$local_root=$remote_root")
+"
+
+exec ssh \
+  -T \
+  -o BatchMode=yes \
+  -o ConnectTimeout=5 \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=2 \
+  -o LogLevel=ERROR \
+  "$ssh_alias" \
+  "$remote_cmd"

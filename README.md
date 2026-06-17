@@ -48,6 +48,8 @@ cd ~/dotfiles && ./install.sh
 - `bin/rlog` - run remote command and mirror logs from `/home/ubuntu/shared/logs`
 - `bin/b10-gpu` - inspect Vultr B200 dev nodes, map GPU owners, and move the configured `rexec` pod
 - `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
+- `bin/remote-clangd` - stdio bridge from local Neovim to remote `clangd-21` on the B200 pod
+- `bin/check-remote-clangd-nvim` - headless verification for remote CUDA diagnostics in Neovim
 
 ## Kubernetes Pod Remote Execution
 
@@ -77,6 +79,10 @@ Config is local-only because it is machine- and pod-specific. `rexec` uses
 `--config`, then `REXEC_CONFIG`, then the nearest `.rexec.yaml`, then
 `~/.config/rexec/config.yaml`. See [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md)
 for architecture diagrams, setup, security model, config shape, and troubleshooting.
+
+For CUDA editing, Neovim can route matching local `*.cu` buffers to remote
+`clangd-21` in the same B200 pod. See [`docs/remote-clangd.md`](docs/remote-clangd.md)
+for flow diagrams, reconnect behavior, and headless verification commands.
 
 ## Baseten GPU Dev Helpers
 

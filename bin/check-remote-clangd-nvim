@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mode="clean"
+if [[ "${1:-}" == "--inject" ]]; then
+  mode="injected"
+  shift
+fi
+
+file="${1:-}"
+if [[ -z "$file" ]]; then
+  printf 'usage: check-remote-clangd-nvim [--inject] PATH_TO_CUDA_FILE\n' >&2
+  exit 2
+fi
+
+REMOTE_CLANGD_TEST_MODE="$mode" nvim --headless -n "$file" +'lua
+local bufnr = vim.api.nvim_get_current_buf()
+local mode = vim.env.REMOTE_CLANGD_TEST_MODE or "clean"
+local expect_diagnostics = mode == "injected"
+
+local function out(message)
+  io.stdout:write(message .. "\n")
+  io.stdout:flush()
+end
+
+local function fail(message)
+  io.stderr:write(message .. "\n")
+  vim.cmd "cquit"
+end
+
+if expect_diagnostics then
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  vim.api.nvim_buf_set_lines(bufnr, line_count, line_count, false, {
+    "",
+    "__global__ void __remote_clangd_probe() {",
+    "  definitely_not_declared_for_remote_clangd_probe = 1;",
+    "}",
+  })
+end
+
+local attached = vim.wait(60000, function()
+  for _, client in ipairs(vim.lsp.get_clients { bufnr = bufnr }) do
+    if client.name:match "^remote_clangd_" then
+      return true
+    end
+  end
+  return false
+end, 100)
+
+if not attached then
+  local names = {}
+  for _, client in ipairs(vim.lsp.get_clients { bufnr = bufnr }) do
+    table.insert(names, client.name)
+  end
+  fail("remote clangd did not attach. attached clients: " .. table.concat(names, ", "))
+end
+
+local names = {}
+for _, client in ipairs(vim.lsp.get_clients { bufnr = bufnr }) do
+  table.insert(names, client.name)
+  if client.name == "clangd" then
+    fail "local clangd attached; expected remote clangd"
+  end
+end
+
+out("attached clients: " .. table.concat(names, ", "))
+out("mode: " .. mode)
+
+local responses = vim.lsp.buf_request_sync(bufnr, "textDocument/documentSymbol", {
+  textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+}, 30000)
+
+if not responses then
+  fail "remote clangd did not answer documentSymbol"
+end
+
+if expect_diagnostics then
+  vim.wait(30000, function()
+    return #vim.diagnostic.get(bufnr) > 0
+  end, 100)
+else
+  vim.wait(5000, function()
+    return false
+  end, 100)
+end
+
+local diagnostics = vim.diagnostic.get(bufnr)
+out("diagnostics: " .. tostring(#diagnostics))
+
+for _, diagnostic in ipairs(diagnostics) do
+  out(string.format("%d:%d %s", diagnostic.lnum + 1, diagnostic.col + 1, diagnostic.message:gsub("\n", " ")))
+end
+
+for _, diagnostic in ipairs(diagnostics) do
+  if diagnostic.message:find("sm_52", 1, true)
+    or diagnostic.message:find("Cannot find CUDA installation", 1, true)
+    or diagnostic.message:find("Cannot find libdevice", 1, true)
+  then
+    fail "saw local clangd CUDA setup diagnostic"
+  end
+end
+
+if expect_diagnostics and #diagnostics == 0 then
+  fail "expected injected remote clangd diagnostic, got none"
+end
+
+if not expect_diagnostics and #diagnostics > 0 then
+  fail "expected clean remote clangd diagnostics, got diagnostics"
+end
+
+vim.cmd "quitall!"
+'
