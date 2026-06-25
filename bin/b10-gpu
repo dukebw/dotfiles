@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """Baseten GPU dev-node helper.
 
-This CLI wraps the small set of Kubernetes/DCGM/rexec operations needed for
-Vultr B200 dev pods: discover schedulable nodes, inspect GPU usage, map host GPU
-processes back to pods, and move the configured rexec pod to a target node.
+This CLI wraps the small set of Kubernetes/DCGM operations needed for Vultr B200
+dev nodes: discover schedulable nodes, inspect GPU usage, map host GPU processes
+back to pods, and move a dev pod to a target node.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shlex
 import subprocess
@@ -19,13 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-try:
-    import yaml
-except ImportError:  # pragma: no cover - smoke-tested manually on dev machines.
-    yaml = None
-
-
-DEFAULT_CONFIG = Path.home() / ".config" / "rexec" / "config.yaml"
+DEFAULT_RCLI_KUBECONFIG_DIR = Path.home() / ".rcli" / "kubeconfig"
 DEFAULT_GPU_PRODUCT = "NVIDIA-B200"
 DEFAULT_DEBUG_NAMESPACE = "default"
 
@@ -36,10 +29,6 @@ class CommandError(RuntimeError):
 
 def eprint(*args: object) -> None:
     print(*args, file=sys.stderr)
-
-
-def expand_path(value: str | os.PathLike[str]) -> str:
-    return str(Path(os.path.expandvars(str(value))).expanduser())
 
 
 def run(
@@ -67,34 +56,39 @@ def run(
     return result
 
 
-def load_rexec_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    if yaml is None:
-        raise CommandError("PyYAML is required to read ~/.config/rexec/config.yaml")
-    with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-    if not isinstance(raw, dict):
-        raise CommandError(f"Invalid rexec config: {path}")
-    return dict(raw)
+def current_kubectl_context() -> str:
+    result = run(["kubectl", "config", "current-context"], capture=True)
+    context = result.stdout.strip()
+    if not context:
+        raise CommandError("No current kubectl context. Run `rcli select` first.")
+    return context
+
+
+def rcli_kubeconfig_for_context(context: str) -> str:
+    root = DEFAULT_RCLI_KUBECONFIG_DIR
+    candidates = []
+    direct = root / f"{context}.yaml"
+    if direct.exists():
+        candidates.append(direct)
+    candidates.extend(sorted(path for path in root.glob(f"*/{context}.yaml") if path.exists()))
+    if not candidates:
+        raise CommandError(
+            f"No rcli kubeconfig found for current context {context!r} under {root}. "
+            "Run `rcli sync`, then `rcli select`."
+        )
+    if len(candidates) > 1:
+        joined = ", ".join(str(path) for path in candidates)
+        raise CommandError(f"Multiple rcli kubeconfigs found for current context {context!r}: {joined}")
+    return str(candidates[0])
 
 
 def base_context(args: argparse.Namespace) -> dict[str, Any]:
-    config_path = Path(expand_path(args.config))
-    rexec_cfg = load_rexec_config(config_path)
-    kubeconfig = args.kubeconfig or os.environ.get("KUBECONFIG") or rexec_cfg.get("kubeconfig")
-    if not kubeconfig:
-        raise CommandError(
-            "Missing kubeconfig. Pass --kubeconfig, set KUBECONFIG, or configure ~/.config/rexec/config.yaml."
-        )
-    namespace = args.namespace or rexec_cfg.get("namespace") or "baseten"
-    pod = args.pod or rexec_cfg.get("pod")
+    context = current_kubectl_context()
     return {
-        "config_path": str(config_path),
-        "rexec_cfg": rexec_cfg,
-        "kubeconfig": expand_path(str(kubeconfig)),
-        "namespace": namespace,
-        "pod": pod,
+        "context": context,
+        "kubeconfig": rcli_kubeconfig_for_context(context),
+        "namespace": args.namespace or "baseten",
+        "pod": args.pod,
         "gpu_product": args.gpu_product,
         "debug_namespace": args.debug_namespace,
         "json": args.json,
@@ -471,26 +465,8 @@ def wait_for_pod_on_node(ctx: dict[str, Any], namespace: str, pod: str, node: st
     raise CommandError(f"Timed out waiting for {namespace}/{pod} to run on {node}")
 
 
-def terminate_mutagen_session(config: dict[str, Any]) -> None:
-    session = config["rexec_cfg"].get("mutagen_session")
-    if not session:
-        return
-    eprint(f"Recreating Mutagen session {session} after pod move")
-    run(["mutagen", "sync", "terminate", str(session)], capture=False, check=False)
-
-
-def rexec_setup_and_sync(config: dict[str, Any]) -> None:
-    terminate_mutagen_session(config)
-    run(["rexec", "--config", config["config_path"], "--setup"], capture=False)
-    session = config["rexec_cfg"].get("mutagen_session")
-    if not session:
-        return
-    flush = run(["mutagen", "sync", "flush", str(session)], capture=True, check=False)
-    if flush.returncode == 0:
-        return
-    eprint(f"Mutagen session {session} still could not flush; recreating it again")
-    run(["mutagen", "sync", "terminate", str(session)], capture=False, check=False)
-    run(["rexec", "--config", config["config_path"], "--setup"], capture=False)
+def rexec_setup_and_sync(_config: dict[str, Any]) -> None:
+    run(["rexec", "--setup"], capture=False)
 
 
 def print_nodes(ctx: dict[str, Any]) -> None:
@@ -588,7 +564,7 @@ def cmd_move(args: argparse.Namespace) -> None:
     namespace = args.pod_namespace or ctx["namespace"]
     pod = args.move_pod or ctx.get("pod")
     if not pod:
-        raise CommandError("Missing pod. Pass --pod or configure ~/.config/rexec/config.yaml")
+        raise CommandError("Missing pod. Pass --pod.")
     statefulset = args.statefulset or infer_statefulset_name(pod)
     target_node = resolve_node(ctx, args.node)
     current_node = current_pod_node(ctx, namespace, pod)
@@ -635,8 +611,6 @@ def cmd_move(args: argparse.Namespace) -> None:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="rexec config path")
-    parser.add_argument("--kubeconfig", help="Kubernetes config path")
     parser.add_argument("--namespace", help="Default dev pod namespace")
     parser.add_argument("--pod", help="Default rexec/dev pod name")
     parser.add_argument("--gpu-product", default=DEFAULT_GPU_PRODUCT, help="GPU product label value")
@@ -645,7 +619,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Baseten Vultr B200 GPU dev-node helper")
+    parser = argparse.ArgumentParser(
+        description="Baseten Vultr B200 GPU dev-node helper using the rcli-selected Kubernetes context"
+    )
     add_common_args(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -665,10 +641,10 @@ def build_parser() -> argparse.ArgumentParser:
     owner.add_argument("node", help="Node full name or unique suffix")
     owner.set_defaults(func=cmd_owner)
 
-    move = subparsers.add_parser("move", help="Move the configured rexec pod to a node")
+    move = subparsers.add_parser("move", help="Move a dev pod to a node")
     move.add_argument("node", help="Target node full name or unique suffix")
     move.add_argument("--from", dest="from_node", help="Expected current node suffix/name")
-    move.add_argument("--pod", dest="move_pod", help="Pod to move; defaults to rexec config pod")
+    move.add_argument("--pod", dest="move_pod", help="Pod to move")
     move.add_argument("--pod-namespace", help="Namespace for --pod; defaults to --namespace/rexec namespace")
     move.add_argument("--statefulset", help="StatefulSet to patch; inferred from pod name by default")
     move.add_argument("--dry-run", action="store_true", help="Print plan without changing anything")

@@ -97,9 +97,9 @@ b10-gpu owner f307cc291a7c
 b10-gpu move f307cc291a7c --dry-run
 ```
 
-By default it reads the kubeconfig, namespace, and pod from
-`~/.config/rexec/config.yaml`. See [`docs/b10-gpu.md`](docs/b10-gpu.md) for
-command details and smoke tests.
+It uses the current `kubectl` context selected by `rcli select` and the matching
+rcli-generated kubeconfig under `~/.rcli/kubeconfig/`. See
+[`docs/b10-gpu.md`](docs/b10-gpu.md) for command details and smoke tests.
 
 ## Remote Log Sync
 
