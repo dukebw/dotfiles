@@ -87,6 +87,7 @@ local `kubectl port-forward` process owned by the laptop session.
 | --- | --- | --- |
 | `rexec` | `bin/rexec` | Python CLI that sets up the SSH shim, creates the Mutagen session, and executes commands. |
 | `r` | `bin/r` | Bash wrapper that always flushes before execution and captures logs. |
+| `rexec-docker-pull` | `bin/rexec-docker-pull` | Pulls Docker images on the pod with temporary Docker credentials only when needed. |
 | Config | `.rexec.yaml` or `~/.config/rexec/config.yaml` | Local, untracked pod/workdir/sync configuration. |
 | State | `~/.config/rexec/` | SSH key, port-forward PID/log, run logs. |
 | SSH alias | `~/.ssh/config` | Managed block named by `ssh_alias`, usually `baseten-dev-pod`. |
@@ -261,6 +262,42 @@ EOF
 ```text
 ~/.config/rexec/logs/r/latest.log
 ~/.config/rexec/logs/r/history/<timestamp>-<pid>.log
+```
+
+## Docker Image Pulls
+
+Do not run plain `docker login` on the pod for long-lived use: Docker writes
+credentials to `/root/.docker/config.json` by default. Use `rexec-docker-pull`
+for private images so credentials live only in a unique temporary
+`DOCKER_CONFIG` under `/tmp`.
+
+```bash
+rexec-docker-pull \
+  baseten/dynamo-cache-aware-routing:trtllm-dyn12-gpu-67d0025e9b-1612f9093-5641f85404 \
+  baseten/bitnami-etcd:latest \
+  nats:latest
+```
+
+Behavior:
+
+```text
+1. Skip images already present on the pod.
+2. Try unauthenticated `docker pull` for missing images.
+3. If a pull fails with an auth-looking error, run `docker login` once through `rexec --tty` using a temp `DOCKER_CONFIG`.
+4. Retry only the auth-failed images with that temp config.
+5. Always delete the temp config, even on failure.
+```
+
+Use `--config` from outside the worktree:
+
+```bash
+rexec-docker-pull --config /path/to/.rexec.yaml baseten/private-image:tag
+```
+
+Force login first when the pull error is not recognized as auth-related:
+
+```bash
+rexec-docker-pull --login baseten/private-image:tag
 ```
 
 ## Lifecycle

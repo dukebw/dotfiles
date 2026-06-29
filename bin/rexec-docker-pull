@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Pull Docker images on a rexec pod without leaving Docker credentials behind."""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import os
+import re
+import shlex
+import subprocess
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+
+AUTH_FAILURE_PATTERNS = (
+    "pull access denied",
+    "may require authorization",
+    "requested access to the resource is denied",
+    "unauthorized",
+    "authentication required",
+    "no basic auth credentials",
+    "denied:",
+)
+
+
+def eprint(*args: object) -> None:
+    print(*args, file=sys.stderr)
+
+
+def rexec_binary() -> str:
+    sibling = Path(__file__).with_name("rexec")
+    if sibling.exists():
+        return str(sibling)
+    return "rexec"
+
+
+def rexec_base(config: str | None, *, quiet: bool = True, tty: bool = False) -> list[str]:
+    cmd = [rexec_binary()]
+    if config:
+        cmd.extend(["--config", config])
+    if quiet:
+        cmd.append("--quiet")
+    if tty:
+        cmd.append("--tty")
+    return cmd
+
+
+def run_rexec(
+    config: str | None,
+    remote_cmd: list[str],
+    *,
+    capture: bool = False,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [*rexec_base(config), *remote_cmd],
+        text=True,
+        capture_output=capture,
+        check=False,
+    )
+
+
+def run_rexec_shell(
+    config: str | None,
+    script: str,
+    *,
+    tty: bool = False,
+    capture: bool = False,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        [*rexec_base(config, tty=tty), "--shell", script],
+        text=True,
+        capture_output=capture,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        if capture:
+            if result.stdout:
+                eprint(result.stdout.rstrip())
+            if result.stderr:
+                eprint(result.stderr.rstrip())
+        raise SystemExit(result.returncode)
+    return result
+
+
+def is_auth_failure(result: subprocess.CompletedProcess[str]) -> bool:
+    output = f"{result.stdout}\n{result.stderr}".lower()
+    return any(pattern in output for pattern in AUTH_FAILURE_PATTERNS)
+
+
+def print_failure(result: subprocess.CompletedProcess[str]) -> None:
+    if result.stdout:
+        eprint(result.stdout.rstrip())
+    if result.stderr:
+        eprint(result.stderr.rstrip())
+
+
+def temp_docker_config() -> str:
+    user = re.sub(r"[^A-Za-z0-9_.-]", "-", getpass.getuser())
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return f"/tmp/rexec-docker-pull-{user}-{os.getpid()}-{timestamp}"
+
+
+def cleanup(config: str | None, docker_config: str) -> None:
+    run_rexec(config, ["rm", "-rf", docker_config], capture=True, check=False)
+
+
+def docker_login(config: str | None, docker_config: str) -> None:
+    script = f"""
+set -euo pipefail
+export DOCKER_CONFIG={shlex.quote(docker_config)}
+rm -rf "$DOCKER_CONFIG"
+mkdir -p "$DOCKER_CONFIG"
+docker login
+""".strip()
+    result = run_rexec_shell(config, script, tty=True)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
+
+
+def pull_with_temp_auth(config: str | None, docker_config: str, images: list[str]) -> None:
+    image_array = " ".join(shlex.quote(image) for image in images)
+    script = f"""
+set -euo pipefail
+export DOCKER_CONFIG={shlex.quote(docker_config)}
+cleanup() {{ rm -rf "$DOCKER_CONFIG"; }}
+trap cleanup EXIT
+for image in {image_array}; do
+  echo "pulling with temp auth: $image" >&2
+  docker pull "$image"
+done
+""".strip()
+    result = run_rexec_shell(config, script)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
+
+
+def image_present(config: str | None, image: str) -> bool:
+    result = run_rexec(config, ["docker", "image", "inspect", image], capture=True, check=False)
+    return result.returncode == 0
+
+
+def pull_without_login(config: str | None, image: str) -> subprocess.CompletedProcess[str]:
+    return run_rexec(config, ["docker", "pull", image], capture=True, check=False)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Pull Docker images on a rexec pod using temporary Docker credentials only when needed."
+    )
+    parser.add_argument(
+        "--config",
+        help="rexec config path. Defaults to rexec's normal config discovery.",
+    )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        help="Force temporary docker login before pulling missing images.",
+    )
+    parser.add_argument("images", nargs="+", help="Docker image references to pull on the rexec pod")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    missing: list[str] = []
+
+    for image in args.images:
+        if image_present(args.config, image):
+            eprint(f"present: {image}")
+        else:
+            missing.append(image)
+
+    if not missing:
+        eprint("all images already present")
+        return
+
+    auth_failures: list[str] = []
+    if not args.login:
+        for image in missing:
+            eprint(f"pulling: {image}")
+            result = pull_without_login(args.config, image)
+            if result.returncode == 0:
+                eprint(f"pulled: {image}")
+            elif is_auth_failure(result):
+                eprint(f"auth required: {image}")
+                auth_failures.append(image)
+            else:
+                print_failure(result)
+                raise SystemExit(result.returncode)
+    else:
+        auth_failures = missing
+
+    if not auth_failures:
+        return
+
+    docker_config = temp_docker_config()
+    try:
+        eprint(f"using temporary remote DOCKER_CONFIG: {docker_config}")
+        docker_login(args.config, docker_config)
+        pull_with_temp_auth(args.config, docker_config, auth_failures)
+    finally:
+        cleanup(args.config, docker_config)
+
+
+if __name__ == "__main__":
+    main()
