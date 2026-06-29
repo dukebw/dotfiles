@@ -8,6 +8,17 @@
       "url": "https://mcp.notion.com/mcp",
       "enabled": true,
       "oauth": {}
+    },
+    "grafana": {
+      "type": "local",
+      "command": ["pipx", "run", "mcp-grafana"],
+      "enabled": true,
+      "timeout": 30000,
+      "environment": {
+        "GRAFANA_URL": "https://grafana.baseten.co",
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "{env:GRAFANA_SERVICE_ACCOUNT_TOKEN}",
+        "GRAFANA_ORG_ID": "1"
+      }
     }
   },
   "provider": {
