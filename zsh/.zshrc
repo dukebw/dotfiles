@@ -102,6 +102,7 @@ source $ZSH/oh-my-zsh.sh
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
+alias gc!='git -c core.commentChar=";" commit --verbose --amend'
 
 # Homebrew
 eval "$(/opt/homebrew/bin/brew shellenv)"
