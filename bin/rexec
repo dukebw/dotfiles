@@ -508,9 +508,88 @@ def mutagen_session_exists(name: str) -> bool:
     ).returncode == 0
 
 
+def mutagen_session_state(name: str) -> dict[str, Any] | None:
+    """Parse `mutagen sync list` output into the status plus per-side file counts."""
+    result = subprocess.run(
+        ["mutagen", "sync", "list", name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    status = ""
+    side = ""
+    files: dict[str, int | None] = {"alpha": None, "beta": None}
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if line.startswith("Alpha:"):
+            side = "alpha"
+            continue
+        if line.startswith("Beta:"):
+            side = "beta"
+            continue
+        if line.startswith("Status:"):
+            status = stripped.removeprefix("Status:").strip()
+            side = ""
+            continue
+        if line and not line[0].isspace():
+            side = ""
+            continue
+        if side and files[side] is None:
+            match = re.match(r"(\d+) files? \(", stripped)
+            if match:
+                files[side] = int(match.group(1))
+    return {"status": status, "alpha_files": files["alpha"], "beta_files": files["beta"]}
+
+
+# Safety halts produced by a recreated (empty) pod-side root, e.g. after
+# `b10-gpu move` lands the pod on a node with a fresh /workspace.
+REPAIRABLE_HALTS = (
+    "Halted due to one-sided root emptying",
+    "Halted due to root deletion",
+)
+
+
+def repair_halted_mutagen_session(cfg: dict[str, Any], *, warn_unrepairable: bool = True) -> bool:
+    """Reset a session that Mutagen safety-halted because the pod-side root came
+    back empty (pod moved or restarted onto a fresh node disk).
+
+    Sessions are one-way-replica (alpha -> beta), so when alpha still has content
+    and beta is empty, reset + re-push is the correct outcome. Never reset when
+    alpha is the empty side: replica mode would propagate the emptiness and wipe
+    the pod-side copy.
+    """
+    name = cfg["mutagen_session"]
+    state = mutagen_session_state(name)
+    if state is None or not state["status"].startswith("Halted"):
+        return False
+    repairable = (
+        state["status"] in REPAIRABLE_HALTS
+        and (state["alpha_files"] or 0) > 0
+        and state["beta_files"] == 0
+    )
+    if not repairable:
+        if warn_unrepairable:
+            eprint(
+                f"{YELLOW}Mutagen session {name} is halted ({state['status']}) but does not "
+                f"match the recreated-remote signature (alpha files={state['alpha_files']}, "
+                f"beta files={state['beta_files']}); not resetting. "
+                f"Inspect with: mutagen sync list {name}{NC}"
+            )
+        return False
+    eprint(
+        f"{YELLOW}Mutagen session {name} halted ({state['status']}); the remote root looks "
+        f"recreated (pod moved/restarted). Resetting the session to re-push from local...{NC}"
+    )
+    run(["mutagen", "sync", "reset", name])
+    return True
+
+
 def ensure_mutagen_session(cfg: dict[str, Any]) -> None:
     name = cfg["mutagen_session"]
     if mutagen_session_exists(name):
+        repair_halted_mutagen_session(cfg)
         return
 
     eprint(f"{BLUE}Creating Mutagen sync session {name}...{NC}")
@@ -548,6 +627,10 @@ def flush_mutagen(cfg: dict[str, Any]) -> None:
             eprint(f"{GREEN}done{NC}")
             return
         last_stderr = result.stderr.strip()
+        # A pod move can halt the session between attempts (the daemon reconnects
+        # and rescans asynchronously), so check after every failed flush.
+        if repair_halted_mutagen_session(cfg, warn_unrepairable=attempt == 1):
+            continue
         if attempt < 5:
             eprint(f"{YELLOW}waiting for sync ({attempt}/5)...{NC}", end=" ")
             subprocess.run(
@@ -628,6 +711,7 @@ def main() -> None:
         epilog="""
 Examples:
   rexec --setup
+  rexec --setup --flush
   r nvidia-smi
   rexec --flush ./scripts/smoke.sh
   rexec --shell 'ls -la | head'
@@ -656,6 +740,8 @@ Examples:
 
     if args.setup:
         setup(cfg, with_mutagen=True)
+        if args.flush:
+            flush_mutagen(cfg)
         if not args.command:
             return
 

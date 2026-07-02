@@ -75,11 +75,21 @@ nodeSelector:
   kubernetes.io/hostname: <target-node>
 ```
 
-Then it waits for the pod to run on the target node and runs `rexec --setup` to
-create a fresh SSH shim and one-way sync session for the new pod instance.
+Then it waits for the pod to run on the target node and runs
+`rexec --setup --flush` to create a fresh SSH shim for the new pod instance and
+block until the sync re-push completes. A fresh node disk makes Mutagen
+safety-halt the existing session (`Halted due to one-sided root emptying`); the
+flush detects that signature and auto-resets the session so the worktree is
+re-pushed from local.
 
 Use `--from <node-suffix>` to make the command fail if the pod is not currently
 on the expected source node.
+
+`rexec --setup --flush` discovers its config from the current directory (nearest
+`.rexec.yaml`, else the global config), so run `b10-gpu move` from the worktree
+whose session you want refreshed, or pass `--rexec-config <path>`. Sessions for
+other worktrees synced to the same pod heal themselves on their next `r` /
+`rexec --flush` use.
 
 ## Smoke Tests
 
@@ -186,5 +196,6 @@ b10-gpu move <other-free-node> --pod <dev-pod-name> --yes
 ```
 
 Expected: patches the StatefulSet, waits for the pod to run on the target node,
-refreshes `rexec`, and leaves a new Mutagen session watching the configured
-sync.
+refreshes `rexec`, auto-resets the Mutagen session halted by the recreated
+remote root, and returns only after the re-push completes with the session
+watching the configured sync.

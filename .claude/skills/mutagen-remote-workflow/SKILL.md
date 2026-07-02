@@ -190,6 +190,13 @@ If the pod restarts, run:
 rexec --setup
 ```
 
+If the pod moved to a node with a fresh disk (e.g. `b10-gpu move`), Mutagen
+halts the session with `Halted due to one-sided root emptying`; `rexec --setup`,
+`rexec --flush`, and `r` auto-reset it when the local side is populated and the
+remote side is empty. `rexec --setup --flush` blocks until the re-push
+completes. Sessions with an empty *local* side are never auto-reset — inspect
+those with `mutagen sync list <mutagen_session>`.
+
 ## When Editing The Workflow
 
 Update all relevant places together:

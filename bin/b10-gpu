@@ -465,8 +465,16 @@ def wait_for_pod_on_node(ctx: dict[str, Any], namespace: str, pod: str, node: st
     raise CommandError(f"Timed out waiting for {namespace}/{pod} to run on {node}")
 
 
-def rexec_setup_and_sync(_config: dict[str, Any]) -> None:
-    run(["rexec", "--setup"], capture=False)
+def rexec_setup_and_sync(rexec_config: str | None) -> None:
+    cmd = ["rexec"]
+    if rexec_config:
+        cmd.extend(["--config", rexec_config])
+    # --flush waits for the full re-push and auto-resets a session that Mutagen
+    # safety-halted because the new node's /workspace came back empty. The halt
+    # often only appears after --setup returns (the daemon reconnects
+    # asynchronously), so the flush retry loop is what reliably repairs it.
+    cmd.extend(["--setup", "--flush"])
+    run(cmd, capture=False)
 
 
 def print_nodes(ctx: dict[str, Any]) -> None:
@@ -606,7 +614,7 @@ def cmd_move(args: argparse.Namespace) -> None:
     if args.skip_rexec:
         print("Skipping rexec refresh by request.")
         return
-    rexec_setup_and_sync(ctx)
+    rexec_setup_and_sync(args.rexec_config)
     print("Move complete.")
 
 
@@ -650,6 +658,10 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--dry-run", action="store_true", help="Print plan without changing anything")
     move.add_argument("--yes", action="store_true", help="Do not prompt before moving")
     move.add_argument("--skip-rexec", action="store_true", help="Do not run rexec/Mutagen refresh after move")
+    move.add_argument(
+        "--rexec-config",
+        help="rexec config YAML for the post-move refresh; defaults to rexec's normal discovery from the current directory",
+    )
     move.set_defaults(func=cmd_move)
 
     return parser

@@ -323,6 +323,15 @@ rexec-docker-pull --login baseten/private-image:tag
 If the pod restarts, run `rexec --setup` again. The private key remains local;
 the pod only gets the public key again.
 
+If the pod came back with a fresh disk (for example after `b10-gpu move` to
+another node), Mutagen sees the previously populated remote root reappear empty
+and safety-halts the session (`Halted due to one-sided root emptying`).
+`rexec --setup`, `rexec --flush`, and `r` detect this signature — session
+halted, local side populated, remote side empty — and automatically run
+`mutagen sync reset` to re-push from local. Use `rexec --setup --flush` to
+block until the re-push completes. Sessions whose *local* side is empty are
+never auto-reset, because one-way-replica mode would wipe the pod-side copy.
+
 If the port-forward dies, the next `rexec`/`r` invocation starts it again.
 
 ## Mutagen Operations
@@ -381,6 +390,21 @@ cat ~/.config/rexec/port-forward.log
 
 Common causes are stale pod names, an unreachable kubeconfig, or the local port
 already being used by another process.
+
+### `session is not currently able to synchronize`
+
+The session is halted. After a pod move/restart onto a fresh disk, the next
+`rexec --setup`, `rexec --flush`, or `r` invocation auto-resets it (see the
+pod-restart note above) — rerun the command if an older rexec printed this.
+If rexec reports the session does not match the recreated-remote signature,
+inspect it before touching anything:
+
+```bash
+mutagen sync list <mutagen_session>
+```
+
+A halt with the *local* (alpha) side empty usually means the local worktree was
+deleted; terminate the session instead of resetting it.
 
 ### Mutagen sync is stale
 
