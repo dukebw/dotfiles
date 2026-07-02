@@ -271,7 +271,10 @@ owner_cgroup() {
   local original=""
   while [ -n "$cur" ] && [ "$cur" != "0" ]; do
     local cg
-    cg=$(cat "/proc/$cur/cgroup" 2>/dev/null | tr '\n' ';' || true)
+    # nsenter into the host cgroup namespace: read from the debug pod's own
+    # namespace, nested-docker (dev pod) processes show a bare /docker/<id>
+    # path with no kubepods pod uid.
+    cg=$(nsenter -t 1 -C -- cat "/proc/$cur/cgroup" 2>/dev/null | tr '\n' ';' || true)
     if [ -z "$original" ]; then original="$cg"; fi
     case "$cg" in
       *kubepods*pod*) echo "$cg"; return ;;
@@ -294,21 +297,16 @@ nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=c
     done
 
 echo "B10_GPU_SECTION|handles"
-declare -A seen
-for fd in /proc/[0-9]*/fd/*; do
-  target=$(readlink "$fd" 2>/dev/null || true)
-  case "$target" in
-    /dev/nvidia*)
-      pid=${fd#/proc/}
-      pid=${pid%%/*}
-      if [ -n "${seen[$pid]:-}" ]; then continue; fi
-      seen[$pid]=1
+# Single find pass: readlink happens in C. The old per-fd bash loop forked a
+# readlink for every fd of every process on the host and never finished on
+# busy nodes.
+find /proc/[0-9]*/fd -lname '/dev/nvidia*' 2>/dev/null \
+  | awk -F/ '{print $3}' | sort -un \
+  | while read -r pid; do
       cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
       cg=$(owner_cgroup "$pid")
       echo "B10_GPU_HANDLE|$pid|$cmdline|$cg"
-      ;;
-  esac
-done
+    done
 echo "B10_GPU_DONE"
 '''
 
