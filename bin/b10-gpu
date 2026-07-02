@@ -560,7 +560,9 @@ def cmd_owner(args: argparse.Namespace) -> None:
     node = resolve_node(ctx, args.node)
     debugger_pod = create_node_debugger(ctx, node, debug_script())
     try:
-        logs = wait_for_debug_logs(ctx, debugger_pod)
+        # The owner script scans every /proc/*/fd on the host; busy nodes
+        # exceed the default 60s comfortably.
+        logs = wait_for_debug_logs(ctx, debugger_pod, timeout_sec=240)
         data = parse_owner_logs(logs, pod_uid_map(ctx))
         print_owner(ctx, node, data)
     finally:
