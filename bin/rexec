@@ -687,7 +687,11 @@ def print_header(cfg: dict[str, Any], command: str) -> None:
 
 
 def execute(cfg: dict[str, Any], command: list[str], *, shell: bool, tty: bool, quiet: bool) -> int:
-    if shell:
+    # A single argument runs as a shell string (ssh semantics), so
+    # `r 'cd sub && make test'` works as written. Multi-arg invocations keep
+    # exact argv boundaries via per-element quoting; --shell forces the
+    # joined-string interpretation for those.
+    if shell or len(command) == 1:
         cmd_str = command[0] if len(command) == 1 else " ".join(command)
         remote_cmd = f"cd {shlex.quote(cfg['remote_workdir'])} && bash -lc {shlex.quote(cmd_str)}"
     else:
@@ -714,6 +718,7 @@ Examples:
   rexec --setup --flush
   r nvidia-smi
   rexec --flush ./scripts/smoke.sh
+  r 'cd subdir && make test'      # single arg -> shell string (ssh semantics)
   rexec --shell 'ls -la | head'
   rexec --tty bash
 """,
