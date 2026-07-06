@@ -132,15 +132,19 @@ keybinds {
         bind "%" { NewPane "Right"; SwitchToMode "Normal"; }
         bind "z" { ToggleFocusFullscreen; SwitchToMode "Normal"; }
         bind "f" { ToggleFloatingPanes; SwitchToMode "Normal"; }
+        // Summon the GPU fleet layer: one nvitop pane per owned pod
+        // (k8s-authority discovery via `b10-gpu fleet`; dotfiles ADR 0001).
+        // The launcher pane flashes briefly on success and stays open with
+        // the remedy on failure. Toggle visibility with C-a f as before.
         bind "F" {
-            Run "rexec" "--tty" "uvx" "--from" "nvitop" "nvitop" {
+            Run "gpu-fleet" {
                 floating true
                 close_on_exit true
-                name "nvitop"
-                x "5%"
-                y "5%"
-                width "90%"
-                height "85%"
+                name "gpu-fleet"
+                x "30%"
+                y "35%"
+                width "40%"
+                height "30%"
             }
             SwitchToMode "Normal";
         }

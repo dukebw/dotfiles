@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Summon the GPU fleet layer: one floating nvitop pane per owned pod.
+
+Zellij glue over `b10-gpu fleet` (the Kubernetes-authority fleet query — see
+dotfiles ADR 0001). Each pane runs nvitop on its pod via `kubectl exec`; no
+rexec/ssh plumbing is involved, so a pod is monitorable the moment it is
+Running.
+
+Reconcile-by-respawn semantics (bind to a key, e.g. tmux-mode F):
+  - fleet unchanged vs live panes -> toggle the floating layer (like `f`)
+  - fleet changed                 -> kill all fleet panes, respawn with fresh
+                                     adaptive layout
+Adaptive layout: 1 pane full-size, 2-3 side-by-side columns, >3 full-size
+cascade (cycle floating focus to inspect). nvitop needs ~80 columns, so
+tiling stops at 3.
+
+Runs inside a Zellij session. On failure it prints the remedy and waits for a
+keypress (the launcher pane doubles as the error pane).
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+MARKER = "GPU_FLEET_PANE"  # embedded in each pane's command line for pgrep
+
+
+def fail(msg: str) -> None:
+    print(f"gpu-fleet: {msg}", file=sys.stderr)
+    print("\npress any key to close", file=sys.stderr)
+    try:
+        subprocess.run(["sh", "-c", "read -n1 -s"], check=False)
+    except Exception:
+        pass
+    sys.exit(1)
+
+
+def fleet() -> dict:
+    proc = subprocess.run(
+        ["b10-gpu", "--json", "fleet"], capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        fail(
+            "fleet query failed:\n"
+            + proc.stderr.strip()
+            + "\n\nlikely fixes: `rcli select` (expired auth) or check kube context"
+        )
+    return json.loads(proc.stdout)
+
+
+def live_pane_pods() -> set[str]:
+    proc = subprocess.run(["pgrep", "-fl", MARKER], capture_output=True, text=True)
+    pods = set()
+    for line in proc.stdout.splitlines():
+        m = re.search(rf"{MARKER}=(\S+)", line)
+        if m:
+            pods.add(m.group(1))
+    return pods
+
+
+def geometry(n: int) -> list[dict[str, str]]:
+    if n == 1:
+        return [dict(x="5%", y="5%", width="90%", height="85%")]
+    if n <= 3:
+        w = {2: 47, 3: 31}[n]
+        step = {2: 49, 3: 33}[n]
+        return [
+            dict(x=f"{2 + i * step}%", y="5%", width=f"{w}%", height="85%")
+            for i in range(n)
+        ]
+    return [  # cascade: full-size, offset; cycle floating focus to inspect
+        dict(x=f"{min(3 * i, 20)}%", y=f"{min(2 * i, 12)}%", width="75%", height="80%")
+        for i in range(n)
+    ]
+
+
+def short(pod: str) -> str:
+    # brendanduke-tp8-dev-pod-b200-0 -> tp8; brendanduke-dev-pod-b200-0 -> dev
+    m = re.match(r"[^-]+-(.+?)-?(dev-)?pod", pod)
+    label = m.group(1).rstrip("-") if m else pod
+    return label or "dev"
+
+
+def main() -> None:
+    if not os.environ.get("ZELLIJ"):
+        sys.exit("gpu-fleet must run inside a Zellij session")
+    data = fleet()
+    pods = [p["name"] for p in data["pods"]]
+    if not pods:
+        fail(f"no Running pods owned by {data['owner']!r} in {data['namespace']}")
+
+    if set(pods) == live_pane_pods():
+        subprocess.run(["zellij", "action", "toggle-floating-panes"], check=False)
+        return
+
+    subprocess.run(["pkill", "-f", MARKER], check=False)  # panes close via close-on-exit
+
+    for pod, geo in zip(pods, geometry(len(pods))):
+        node = next(p["node"] for p in data["pods"] if p["name"] == pod)
+        cmd = [
+            "zellij", "run",
+            "--floating", "--close-on-exit",
+            "--name", f"nvitop@{short(pod)} [{node.split('-')[-1]}]",
+            "-x", geo["x"], "-y", geo["y"],
+            "--width", geo["width"], "--height", geo["height"],
+            "--",
+            "env", f"{MARKER}={pod}", f"KUBECONFIG={data['kubeconfig']}",
+            "kubectl", "exec", "-it", "-n", data["namespace"], pod,
+            "--", "uvx", "--from", "nvitop", "nvitop",
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            fail(f"zellij run failed for {pod}:\n{proc.stderr.strip()}")
+
+
+if __name__ == "__main__":
+    main()

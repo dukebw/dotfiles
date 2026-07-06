@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -567,6 +568,58 @@ def cmd_owner(args: argparse.Namespace) -> None:
         delete_debugger(ctx, debugger_pod)
 
 
+def owned_pods(ctx: dict[str, Any], owner_prefix: str, all_phases: bool) -> list[dict[str, str]]:
+    data = kubectl_json(ctx, ["-n", ctx["namespace"], "get", "pods", "-o", "json"])
+    rows = []
+    for pod in data.get("items", []):
+        name = pod.get("metadata", {}).get("name", "")
+        if not name.startswith(owner_prefix):
+            continue
+        phase = pod.get("status", {}).get("phase", "")
+        if not all_phases and phase != "Running":
+            continue
+        rows.append(
+            {
+                "name": name,
+                "node": pod.get("spec", {}).get("nodeName", ""),
+                "phase": phase,
+                "ready": pod_ready_summary(pod),
+            }
+        )
+    return sorted(rows, key=lambda row: row["name"])
+
+
+def cmd_fleet(args: argparse.Namespace) -> None:
+    """List the pods you own (name-prefix convention) — the fleet.
+
+    Kubernetes is the authority for fleet membership; .rexec*.yaml files are
+    sync plumbing and deliberately play no part here (see dotfiles ADR 0001).
+    """
+    ctx = base_context(args)
+    owner = args.owner or os.environ.get("FLEET_USER") or os.environ.get("USER", "")
+    if not owner:
+        raise CommandError("Cannot determine owner: pass --owner or set FLEET_USER/USER")
+    pods = owned_pods(ctx, owner, args.all_phases)
+    if ctx["json"]:
+        print(
+            json.dumps(
+                {
+                    "owner": owner,
+                    "namespace": ctx["namespace"],
+                    "kubeconfig": ctx["kubeconfig"],
+                    "pods": pods,
+                },
+                indent=2,
+            )
+        )
+        return
+    if not pods:
+        print(f"No pods owned by {owner!r} in namespace {ctx['namespace']}")
+        return
+    for pod in pods:
+        print(f"{pod['name']}\t{pod['phase']}\t{pod['ready']}\t{pod['node']}")
+
+
 def cmd_move(args: argparse.Namespace) -> None:
     ctx = base_context(args)
     namespace = args.pod_namespace or ctx["namespace"]
@@ -648,6 +701,11 @@ def build_parser() -> argparse.ArgumentParser:
     owner = subparsers.add_parser("owner", help="Map host GPU processes back to pods")
     owner.add_argument("node", help="Node full name or unique suffix")
     owner.set_defaults(func=cmd_owner)
+
+    fleet = subparsers.add_parser("fleet", help="List pods you own (the fleet)")
+    fleet.add_argument("--owner", help="Owner name prefix; defaults to $FLEET_USER then $USER")
+    fleet.add_argument("--all-phases", action="store_true", help="Include non-Running pods")
+    fleet.set_defaults(func=cmd_fleet)
 
     move = subparsers.add_parser("move", help="Move a dev pod to a node")
     move.add_argument("node", help="Target node full name or unique suffix")
