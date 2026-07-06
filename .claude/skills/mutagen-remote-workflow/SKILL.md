@@ -55,9 +55,10 @@ Read that file before changing the workflow. Keep it updated when changing
 | `bin/rexec` | Python CLI for pod setup, Mutagen sync, and remote execution. |
 | `bin/r` | Wrapper that runs `rexec --flush`, streams output, and writes logs locally. |
 | `docs/rexec-kubernetes-pod.md` | Full architecture, setup, security, and troubleshooting docs. |
-| `.rexec.yaml` or `~/.config/rexec/config.yaml` | Local untracked pod/workdir config. |
+| `~/.config/rexec/pods.yaml` | Global pod registry: pod key → k8s pod name, ssh alias, tunnel port, cluster defaults (ADR 0002). |
+| `.rexec.yaml` at the worktree root | Untracked worktree sync config: `remote_workdir` + `ignore` only, pod-agnostic. |
 | `~/.config/rexec/pod_ed25519` | Local throwaway private key for the pod SSH shim. |
-| `~/.ssh/config` | Contains a managed `rexec` Host block. |
+| `~/.ssh/config` | Managed block with one Host entry per registry pod, derived from the registry. |
 
 ## Setup Checklist
 
@@ -67,73 +68,82 @@ Read that file before changing the workflow. Keep it updated when changing
 kubectl --kubeconfig <kubeconfig> get pod -n <namespace> <pod>
 ```
 
-2. Create `.rexec.yaml` in the worktree or `~/.config/rexec/config.yaml` with the kubeconfig, namespace, pod,
-   local root, remote workdir, SSH alias, local port, remote port, key path,
-   Mutagen session name, and ignore rules.
+2. Add a registry entry in `~/.config/rexec/pods.yaml` (pod key → `pod`,
+   `ssh_alias`, unique `ssh_local_port`). Create `.rexec.yaml` in the worktree
+   with `remote_workdir` and `ignore` rules (`local_root` defaults to the
+   file's directory).
 
-3. Run setup from the local repo root:
+3. Run setup from the local repo root, per pod:
 
 ```bash
-rexec --setup
+rexec --setup -p <key>
 ```
 
 4. Verify execution:
 
 ```bash
-r nvidia-smi
+rexec --pods
+r -p <key> nvidia-smi
 rexec --quiet hostname
 rexec --shell 'pwd && ls'
 ```
 
 ## Config Shape
 
-Example config:
+Pod registry `~/.config/rexec/pods.yaml`:
 
 ```yaml
-kubeconfig: /path/to/kubeconfig.yaml
+default: e7e4
+kubeconfig: ~/.rcli/kubeconfig/vultr-us-sea-prod-1.yaml
 namespace: baseten
-pod: brendanduke-dev-pod-b200-0
+pods:
+  e7e4:
+    pod: brendanduke-dev-pod-b200-0
+    ssh_alias: baseten-dev-pod
+    ssh_local_port: 22222
+  21ca:
+    pod: brendanduke-tp8-dev-pod-b200-0
+    ssh_alias: baseten-tp8-pod
+    ssh_local_port: 22223
+```
 
-local_root: /Users/brendanduke/work/baseten-ideogram4-smoke
-remote_workdir: /workspace/baseten-ideogram4-smoke
+Worktree `.rexec.yaml` (sync facts only; pod-reachability keys here are a
+legacy config and fail loud with migration instructions):
 
-ssh_alias: baseten-dev-pod
-ssh_host: 127.0.0.1
-ssh_local_port: 22222
-ssh_remote_port: 2222
-ssh_user: root
-ssh_key: /Users/brendanduke/.config/rexec/pod_ed25519
-
-mutagen_session: baseten-ideogram4-smoke
-
+```yaml
+remote_workdir: /workspace/fresh_glm5.2/baseten-dspark
 ignore:
   - /.git
-  - /node_modules
   - "**/__pycache__"
   - "**/.venv"
   - .DS_Store
 ```
 
-Supported environment overrides:
+Mutagen session names are always derived: `<worktree-dirname>-<podkey>`
+(e.g. `baseten-dspark-21ca`); sessions auto-create on first flush.
 
-Config discovery order: `--config`, `REXEC_CONFIG`, nearest `.rexec.yaml`, then
-`~/.config/rexec/config.yaml`.
+Pod selection precedence: `-p/--pod <key>` flag, then `$REXEC_POD`, then the
+registry `default:`. Worktree config discovery: `--config`, `REXEC_CONFIG`,
+nearest `.rexec.yaml`, then `~/.config/rexec/config.yaml`.
 
-| Environment variable | Config key |
+| Environment variable | Meaning |
 | --- | --- |
-| `REXEC_CONFIG` | Config file path |
+| `REXEC_CONFIG` | Worktree config file path |
+| `REXEC_POD` | Pod key (registry selection, NOT a raw k8s pod name) |
 | `REXEC_KUBECONFIG` | `kubeconfig` |
 | `REXEC_NAMESPACE` | `namespace` |
-| `REXEC_POD` | `pod` |
 | `REXEC_LOCAL_ROOT` | `local_root` |
 | `REXEC_WORKDIR` | `remote_workdir` |
 
 ## Daily Commands
 
 ```bash
-r nvidia-smi
+r nvidia-smi                              # registry default pod
+r -p 21ca docker logs -f docker-worker-1  # explicit pod key
+export REXEC_POD=21ca                     # point this shell at 21ca
 r docker ps
 r ./scripts/smoke-test.sh
+rexec --pods                              # list the registry
 rexec hostname
 rexec --quiet hostname
 rexec --shell 'ls -la | head'
@@ -160,7 +170,7 @@ EOF
 - Do not add `.git` to Mutagen sync.
 - Do not expose SSH with a Kubernetes `Service`; use local `kubectl port-forward`.
 - Prefer short-lived environment variables or BuildKit secrets for one-off secrets.
-- Keep `.rexec.yaml` and `~/.config/rexec/config.yaml` untracked.
+- Keep `.rexec.yaml` and `~/.config/rexec/pods.yaml` untracked.
 
 ## Troubleshooting
 
@@ -170,24 +180,25 @@ If zsh runs the builtin history command instead of `r`, reload `.zshrc`:
 source ~/.zshrc
 ```
 
-If the port-forward fails, inspect:
+If the port-forward fails, inspect the selected pod's log:
 
 ```bash
-cat ~/.config/rexec/port-forward.log
+cat ~/.config/rexec/port-forward-<key>.log
 ```
 
-If sync is stale, flush or recreate the Mutagen session:
+If sync is stale, flush or recreate the Mutagen session (derived name
+`<worktree-dirname>-<podkey>`):
 
 ```bash
-mutagen sync flush <mutagen_session>
-mutagen sync terminate <mutagen_session>
-rexec --setup
+mutagen sync flush <worktree>-<key>
+mutagen sync terminate <worktree>-<key>
+rexec --setup -p <key>
 ```
 
 If the pod restarts, run:
 
 ```bash
-rexec --setup
+rexec --setup -p <key>
 ```
 
 If the pod moved to a node with a fresh disk (e.g. `b10-gpu move`), Mutagen

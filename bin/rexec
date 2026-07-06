@@ -34,6 +34,21 @@ NC = "\033[0m" if USE_COLOR else ""
 DEFAULT_CONFIG = Path.home() / ".config" / "rexec" / "config.yaml"
 PROJECT_CONFIG_NAME = ".rexec.yaml"
 DEFAULT_STATE_DIR = Path.home() / ".config" / "rexec"
+POD_REGISTRY = Path.home() / ".config" / "rexec" / "pods.yaml"
+# Pod-reachability keys are registry-only (ADR 0002); their presence in a
+# worktree config marks a pre-registry file that must be migrated, not honored.
+LEGACY_POD_KEYS = (
+    "pod",
+    "ssh_alias",
+    "ssh_host",
+    "ssh_local_port",
+    "ssh_remote_port",
+    "ssh_user",
+    "ssh_key",
+    "mutagen_session",
+    "kubeconfig",
+    "namespace",
+)
 SSH_CONFIG = Path.home() / ".ssh" / "config"
 SSH_BEGIN = "# BEGIN rexec managed pod SSH shim"
 SSH_END = "# END rexec managed pod SSH shim"
@@ -69,11 +84,106 @@ def resolve_config_path(config_arg: str | None) -> Path:
     return DEFAULT_CONFIG
 
 
-def load_config(path: Path) -> dict[str, Any]:
+def load_registry() -> dict[str, Any]:
+    if not POD_REGISTRY.exists():
+        raise SystemExit(
+            f"Missing pod registry: {POD_REGISTRY}\n"
+            "Declare your pods once, globally:\n"
+            "  default: e7e4\n"
+            "  kubeconfig: ~/.rcli/kubeconfig/<cluster>.yaml\n"
+            "  namespace: baseten\n"
+            "  pods:\n"
+            "    e7e4:\n"
+            "      pod: <k8s pod name>\n"
+            "      ssh_alias: <alias>\n"
+            "      ssh_local_port: 22222\n"
+            "See docs/rexec-kubernetes-pod.md (ADR 0002)."
+        )
+    with open(POD_REGISTRY, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    pods = raw.get("pods") if isinstance(raw, dict) else None
+    if not isinstance(pods, dict) or not pods:
+        raise SystemExit(f"Invalid pod registry (need a non-empty 'pods' map): {POD_REGISTRY}")
+
+    seen_ports: dict[int, str] = {}
+    seen_aliases: dict[str, str] = {}
+    for key, entry in pods.items():
+        if not isinstance(entry, dict):
+            raise SystemExit(f"Pod registry entry {key!r} must be a map: {POD_REGISTRY}")
+        missing = [k for k in ("pod", "ssh_alias", "ssh_local_port") if not entry.get(k)]
+        if missing:
+            raise SystemExit(
+                f"Pod registry entry {key!r} is missing: {', '.join(missing)} ({POD_REGISTRY})"
+            )
+        port = int(entry["ssh_local_port"])
+        if port in seen_ports:
+            raise SystemExit(
+                f"Pod registry port conflict: {port} used by both "
+                f"{seen_ports[port]!r} and {key!r} ({POD_REGISTRY})"
+            )
+        seen_ports[port] = key
+        alias = entry["ssh_alias"]
+        if alias in seen_aliases:
+            raise SystemExit(
+                f"Pod registry alias conflict: {alias!r} used by both "
+                f"{seen_aliases[alias]!r} and {key!r} ({POD_REGISTRY})"
+            )
+        seen_aliases[alias] = key
+    default = raw.get("default")
+    if default is not None and default not in pods:
+        raise SystemExit(f"Pod registry default {default!r} is not a pods entry ({POD_REGISTRY})")
+    return raw
+
+
+def known_pods_summary(registry: dict[str, Any]) -> str:
+    default = registry.get("default")
+    return ", ".join(
+        f"{key} (default)" if key == default else key for key in registry["pods"]
+    )
+
+
+def select_pod_key(registry: dict[str, Any], flag_value: str | None) -> str:
+    key = flag_value or os.environ.get("REXEC_POD") or registry.get("default")
+    if not key:
+        raise SystemExit(
+            f"No pod selected: pass -p/--pod, set $REXEC_POD, or add 'default:' "
+            f"to {POD_REGISTRY}\n  known pods: {known_pods_summary(registry)}"
+        )
+    if key not in registry["pods"]:
+        raise SystemExit(
+            f"Unknown pod {key!r} in {POD_REGISTRY}\n"
+            f"  known pods: {known_pods_summary(registry)}"
+        )
+    return key
+
+
+def resolve_pod_entry(registry: dict[str, Any], key: str) -> dict[str, Any]:
+    """A registry entry merged over registry-level then hardcoded ssh defaults."""
+    merged: dict[str, Any] = {
+        "ssh_user": "root",
+        "ssh_host": "127.0.0.1",
+        "ssh_remote_port": 2222,
+        "ssh_key": str(DEFAULT_STATE_DIR / "pod_ed25519"),
+    }
+    for k in ("kubeconfig", "namespace", "ssh_user", "ssh_host", "ssh_remote_port", "ssh_key"):
+        if registry.get(k):
+            merged[k] = registry[k]
+    merged.update(registry["pods"][key])
+    merged["pod_key"] = key
+    merged["ssh_local_port"] = int(merged["ssh_local_port"])
+    merged["ssh_remote_port"] = int(merged["ssh_remote_port"])
+    merged["ssh_key"] = str(expand_path(merged["ssh_key"]))
+    if merged.get("kubeconfig"):
+        merged["kubeconfig"] = str(expand_path(merged["kubeconfig"]))
+    return merged
+
+
+def load_config(path: Path, pod_flag: str | None) -> dict[str, Any]:
     if not path.exists():
         raise SystemExit(
-            f"Missing rexec config: {path}\n"
-            "Create it with kubeconfig, namespace, pod, local_root, and remote_workdir."
+            f"Missing rexec worktree config: {path}\n"
+            "Create it with remote_workdir (and optional ignore rules); pod "
+            f"reachability lives in {POD_REGISTRY}."
         )
 
     with open(path, "r", encoding="utf-8") as f:
@@ -81,21 +191,36 @@ def load_config(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise SystemExit(f"Invalid rexec config: {path}")
 
-    cfg: dict[str, Any] = dict(raw)
-    cfg.setdefault("state_dir", str(DEFAULT_STATE_DIR))
-    cfg.setdefault("ssh_alias", "baseten-dev-pod")
-    cfg.setdefault("ssh_user", "root")
-    cfg.setdefault("ssh_host", "127.0.0.1")
-    cfg.setdefault("ssh_local_port", 22222)
-    cfg.setdefault("ssh_remote_port", 2222)
-    cfg.setdefault("ssh_key", str(DEFAULT_STATE_DIR / "pod_ed25519"))
-    cfg.setdefault("mutagen_session", "rexec-pod")
-    cfg.setdefault("ignore", [])
+    legacy = [k for k in LEGACY_POD_KEYS if k in raw]
+    if legacy:
+        raise SystemExit(
+            f"{path} contains pod-reachability keys ({', '.join(legacy)}) — these "
+            f"moved to {POD_REGISTRY} in the registry model (ADR 0002).\n"
+            f"  1. Move pod/ssh_alias/ssh_local_port (and kubeconfig/namespace) "
+            f"into a pods.yaml entry\n"
+            f"  2. Keep only remote_workdir and ignore here; delete per-pod "
+            f"variants (.rexec-<name>.yaml)\n"
+            f"  3. Select pods with -p/--pod <key> or $REXEC_POD\n"
+            f"See docs/rexec-kubernetes-pod.md#migrating-to-the-pod-registry."
+        )
+
+    registry = load_registry()
+    pod_key = select_pod_key(registry, pod_flag)
+    cfg = resolve_pod_entry(registry, pod_key)
+    cfg["registry"] = registry
+
+    cfg["config_path"] = str(path)
+    cfg["state_dir"] = str(expand_path(raw.get("state_dir", DEFAULT_STATE_DIR)))
+    # The worktree root is where its config lives, unless declared otherwise
+    # (the global-fallback config at DEFAULT_CONFIG must declare it).
+    cfg["local_root"] = str(expand_path(raw.get("local_root", path.parent)))
+    if raw.get("remote_workdir"):
+        cfg["remote_workdir"] = raw["remote_workdir"]
+    cfg["ignore"] = raw.get("ignore", [])
 
     env_overrides = {
         "REXEC_KUBECONFIG": "kubeconfig",
         "REXEC_NAMESPACE": "namespace",
-        "REXEC_POD": "pod",
         "REXEC_LOCAL_ROOT": "local_root",
         "REXEC_WORKDIR": "remote_workdir",
     }
@@ -108,13 +233,10 @@ def load_config(path: Path) -> dict[str, Any]:
     if missing:
         raise SystemExit(f"Missing required rexec config keys: {', '.join(missing)}")
 
-    cfg["config_path"] = str(path)
-    cfg["state_dir"] = str(expand_path(cfg["state_dir"]))
     cfg["kubeconfig"] = str(expand_path(cfg["kubeconfig"]))
     cfg["local_root"] = str(expand_path(cfg["local_root"]))
-    cfg["ssh_key"] = str(expand_path(cfg["ssh_key"]))
-    cfg["ssh_local_port"] = int(cfg["ssh_local_port"])
-    cfg["ssh_remote_port"] = int(cfg["ssh_remote_port"])
+    # One session per (worktree, pod) pair; derived, never declared.
+    cfg["mutagen_session"] = f"{Path(cfg['local_root']).name}-{pod_key}"
     return cfg
 
 
@@ -333,21 +455,30 @@ exit 1
     raise SystemExit("Failed to ensure sshd in pod via kubectl exec")
 
 
-def write_ssh_config(cfg: dict[str, Any]) -> None:
-    SSH_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    old = SSH_CONFIG.read_text(encoding="utf-8") if SSH_CONFIG.exists() else ""
-    block = f"""{SSH_BEGIN}
-Host {cfg['ssh_alias']}
-\tHostName {cfg['ssh_host']}
-\tPort {cfg['ssh_local_port']}
-\tUser {cfg['ssh_user']}
-\tIdentityFile {cfg['ssh_key']}
+def ssh_host_stanza(entry: dict[str, Any]) -> str:
+    return f"""Host {entry['ssh_alias']}
+\tHostName {entry['ssh_host']}
+\tPort {entry['ssh_local_port']}
+\tUser {entry['ssh_user']}
+\tIdentityFile {entry['ssh_key']}
 \tIdentitiesOnly yes
 \tStrictHostKeyChecking no
 \tUserKnownHostsFile /dev/null
 \tLogLevel ERROR
 \tForwardX11 no
-\tForwardX11Trusted no
+\tForwardX11Trusted no"""
+
+
+def write_ssh_config(registry: dict[str, Any]) -> None:
+    # The managed block is derived from the WHOLE registry so no pod's setup
+    # can clobber another's entry (ADR 0002).
+    SSH_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    old = SSH_CONFIG.read_text(encoding="utf-8") if SSH_CONFIG.exists() else ""
+    stanzas = "\n".join(
+        ssh_host_stanza(resolve_pod_entry(registry, key)) for key in registry["pods"]
+    )
+    block = f"""{SSH_BEGIN}
+{stanzas}
 {SSH_END}
 """
     pattern = re.compile(re.escape(SSH_BEGIN) + r".*?" + re.escape(SSH_END) + r"\n?", re.S)
@@ -384,7 +515,10 @@ def read_pid(pid_path: Path) -> int | None:
 def port_forward_paths(cfg: dict[str, Any]) -> tuple[Path, Path]:
     state_dir = Path(cfg["state_dir"])
     state_dir.mkdir(parents=True, exist_ok=True)
-    return state_dir / "port-forward.pid", state_dir / "port-forward.log"
+    # Keyed by pod: each pod runs its own forward on its own port, and a shared
+    # pid file would let one pod's setup kill another's live tunnel.
+    key = cfg["pod_key"]
+    return state_dir / f"port-forward-{key}.pid", state_dir / f"port-forward-{key}.log"
 
 
 def stop_port_forward(cfg: dict[str, Any]) -> None:
@@ -649,7 +783,7 @@ def flush_mutagen(cfg: dict[str, Any]) -> None:
 
 def setup(cfg: dict[str, Any], *, with_mutagen: bool = True) -> None:
     ensure_ssh_key(cfg)
-    write_ssh_config(cfg)
+    write_ssh_config(cfg["registry"])
     if not ssh_probe(cfg, timeout_sec=2):
         stop_port_forward(cfg)
         kubectl_auth_preflight(cfg)
@@ -677,7 +811,7 @@ def print_header(cfg: dict[str, Any], command: str) -> None:
     eprint(f"{BOLD}+--------------------------------------------------------------+{NC}")
     eprint(f"{BOLD}|{NC} {CYAN}POD EXECUTION{NC}")
     eprint(f"{BOLD}+--------------------------------------------------------------+{NC}")
-    eprint(f"Pod:     {GREEN}{cfg['namespace']}/{cfg['pod']}{NC}")
+    eprint(f"Pod:     {GREEN}{cfg['namespace']}/{cfg['pod']}{NC} [{cfg['pod_key']}]")
     eprint(f"SSH:     {GREEN}{cfg['ssh_alias']}{NC} -> localhost:{cfg['ssh_local_port']}")
     eprint(f"Workdir: {BLUE}{cfg['remote_workdir']}{NC}")
     eprint(f"Commit:  {DIM}{local_commit()}{NC} (local)")
@@ -717,18 +851,35 @@ Examples:
   rexec --setup
   rexec --setup --flush
   r nvidia-smi
+  r -p 21ca docker logs -f docker-worker-1
+  export REXEC_POD=21ca           # whole shell targets pod key 21ca
   rexec --flush ./scripts/smoke.sh
   r 'cd subdir && make test'      # single arg -> shell string (ssh semantics)
   rexec --shell 'ls -la | head'
   rexec --tty bash
+  rexec --pods                    # list the pod registry
 """,
     )
     parser.add_argument(
         "--config",
         help=(
-            "Config YAML path. Defaults to $REXEC_CONFIG, then nearest "
+            "Worktree config YAML path. Defaults to $REXEC_CONFIG, then nearest "
             f"{PROJECT_CONFIG_NAME}, then {DEFAULT_CONFIG}."
         ),
+    )
+    parser.add_argument(
+        "--pod",
+        "-p",
+        metavar="KEY",
+        help=(
+            f"Pod key from {POD_REGISTRY}. Precedence: this flag, then $REXEC_POD, "
+            "then the registry's 'default:'."
+        ),
+    )
+    parser.add_argument(
+        "--pods",
+        action="store_true",
+        help="List the pod registry (key, k8s pod, ssh alias, port) and exit",
     )
     parser.add_argument("--setup", action="store_true", help="Install/start pod SSH shim and Mutagen session")
     parser.add_argument("--remote", "-r", help="Override configured SSH alias")
@@ -739,7 +890,19 @@ Examples:
     parser.add_argument("command", nargs=argparse.REMAINDER, help="Command to execute")
     args = parser.parse_args()
 
-    cfg = load_config(resolve_config_path(args.config))
+    if args.pods:
+        registry = load_registry()
+        default = registry.get("default")
+        for key in registry["pods"]:
+            entry = resolve_pod_entry(registry, key)
+            marker = " (default)" if key == default else ""
+            print(
+                f"{key}{marker}\t{entry['pod']}\t{entry['ssh_alias']}"
+                f"\tlocalhost:{entry['ssh_local_port']}"
+            )
+        return
+
+    cfg = load_config(resolve_config_path(args.config), args.pod)
     if args.remote:
         cfg["ssh_alias"] = args.remote
 

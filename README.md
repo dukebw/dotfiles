@@ -70,14 +70,18 @@ stdout/stderr mirrored to local logs
 Quick commands:
 
 ```bash
-rexec --setup       # install/start pod SSH shim and Mutagen session
-r nvidia-smi        # sync then run in the pod
-rexec --tty bash    # interactive shell in the remote workdir
+rexec --setup -p <key>   # install/start pod SSH shim and Mutagen session
+r nvidia-smi             # sync then run in the default pod
+r -p 21ca docker ps      # target another pod by registry key
+rexec --pods             # list the pod registry
+rexec --tty bash         # interactive shell in the remote workdir
 ```
 
-Config is local-only because it is machine- and pod-specific. `rexec` uses
-`--config`, then `REXEC_CONFIG`, then the nearest `.rexec.yaml`, then
-`~/.config/rexec/config.yaml`. See [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md)
+Config is local-only because it is machine- and pod-specific, and splits in
+two (ADR 0002): a global pod registry (`~/.config/rexec/pods.yaml`: pod key →
+k8s pod name, ssh alias, tunnel port) and a per-worktree `.rexec.yaml` with
+sync facts only. Pod selection: `-p/--pod`, then `$REXEC_POD`, then the
+registry default. See [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md)
 for architecture diagrams, setup, security model, config shape, and troubleshooting.
 
 For CUDA editing, Neovim can route matching local `*.cu` buffers to remote
@@ -122,8 +126,9 @@ Logs appear locally under `~/shared/b200-hydra/logs/<label>/<run-id>/`.
 ## Manual Steps After Install
 
 1. Copy SSH keys from another machine
-2. Create `.rexec.yaml` in each synced worktree or `~/.config/rexec/config.yaml`
-3. Run `rexec --setup` from the local repo you want synced
+2. Create `~/.config/rexec/pods.yaml` (pod registry) and a `.rexec.yaml` in
+   each synced worktree
+3. Run `rexec --setup -p <key>` from the local repo you want synced
 4. iTerm2: Set font to "Hack Nerd Font Mono", style "No Title Bar"
 5. System Settings -> Keyboard -> Shortcuts: Set Ctrl+N for Desktop N
 
