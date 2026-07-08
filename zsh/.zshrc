@@ -104,6 +104,9 @@ source $ZSH/oh-my-zsh.sh
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 alias k=kubectl
 alias gc!='git -c core.commentChar=";" commit --verbose --amend'
+claude-remote() {
+  caffeinate -i /Users/brendanduke/.local/bin/claude "$@" --remote-control "Baseten Remote"
+}
 
 # Homebrew
 eval "$(/opt/homebrew/bin/brew shellenv)"
