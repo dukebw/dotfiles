@@ -2,21 +2,32 @@
 set -euo pipefail
 
 mode="clean"
-if [[ "${1:-}" == "--inject" ]]; then
-  mode="injected"
-  shift
-fi
+allow_diagnostics=0
+probe_local_guard=0
+probe_tunnel_recovery=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --inject) mode="injected"; shift ;;
+    --allow-diagnostics) allow_diagnostics=1; shift ;;
+    --probe-local-guard) probe_local_guard=1; shift ;;
+    --probe-tunnel-recovery) probe_tunnel_recovery=1; shift ;;
+    *) break ;;
+  esac
+done
 
 file="${1:-}"
 if [[ -z "$file" ]]; then
-  printf 'usage: check-remote-clangd-nvim [--inject] PATH_TO_CUDA_FILE\n' >&2
+  printf 'usage: check-remote-clangd-nvim [--inject] [--allow-diagnostics] [--probe-local-guard] [--probe-tunnel-recovery] PATH\n' >&2
   exit 2
 fi
 
-REMOTE_CLANGD_TEST_MODE="$mode" nvim --headless -n "$file" +'lua
+REMOTE_CLANGD_TEST_MODE="$mode" REMOTE_CLANGD_ALLOW_DIAGNOSTICS="$allow_diagnostics" REMOTE_CLANGD_PROBE_LOCAL_GUARD="$probe_local_guard" REMOTE_CLANGD_PROBE_TUNNEL_RECOVERY="$probe_tunnel_recovery" nvim --headless -n "$file" +'lua
 local bufnr = vim.api.nvim_get_current_buf()
 local mode = vim.env.REMOTE_CLANGD_TEST_MODE or "clean"
 local expect_diagnostics = mode == "injected"
+local allow_diagnostics = vim.env.REMOTE_CLANGD_ALLOW_DIAGNOSTICS == "1"
+local probe_local_guard = vim.env.REMOTE_CLANGD_PROBE_LOCAL_GUARD == "1"
+local probe_tunnel_recovery = vim.env.REMOTE_CLANGD_PROBE_TUNNEL_RECOVERY == "1"
 
 local function out(message)
   io.stdout:write(message .. "\n")
@@ -55,6 +66,76 @@ if not attached then
   fail("remote clangd did not attach. attached clients: " .. table.concat(names, ", "))
 end
 
+if probe_tunnel_recovery then
+  local original_client
+  for _, client in ipairs(vim.lsp.get_clients { bufnr = bufnr }) do
+    if client.name:match "^remote_clangd_" then
+      original_client = client
+      break
+    end
+  end
+
+  vim.wait(6000, function()
+    return false
+  end, 100)
+  local pgrep_result = vim.system({ "pgrep", "-f", "kubectl.*port-forward.*22222:2222" }, { text = true }):wait()
+  local tunnel_pid = pgrep_result.stdout and pgrep_result.stdout:match "%d+"
+  if not tunnel_pid then
+    fail "could not find rexec port-forward process"
+  end
+  local kill_result = vim.system({ "kill", tunnel_pid }, { text = true }):wait()
+  if kill_result.code ~= 0 then
+    fail "failed to stop rexec port-forward process"
+  end
+
+  local recovered = vim.wait(90000, function()
+    for _, client in ipairs(vim.lsp.get_clients { bufnr = bufnr }) do
+      if client.name:match "^remote_clangd_" and client.id ~= original_client.id and client.initialized then
+        return true
+      end
+    end
+    return false
+  end, 100)
+  if not recovered then
+    fail "remote clangd did not recover after tunnel loss"
+  end
+  out "tunnel recovery: passed"
+end
+
+if probe_local_guard then
+  local saw_local_attach = false
+  vim.api.nvim_create_autocmd("LspAttach", {
+    once = true,
+    callback = function(args)
+      local client = vim.lsp.get_client_by_id(args.data.client_id)
+      saw_local_attach = client ~= nil and client.name == "clangd"
+    end,
+  })
+  local local_client_id = vim.lsp.start({
+    name = "clangd",
+    cmd = { "/usr/bin/clangd" },
+    root_dir = vim.fs.root(bufnr, { ".clangd", ".git" }),
+  }, { bufnr = bufnr })
+  if not local_client_id then
+    fail "failed to start local clangd guard probe"
+  end
+
+  local guarded = vim.wait(30000, function()
+    if not saw_local_attach then
+      return false
+    end
+    return #vim.lsp.get_clients { bufnr = bufnr, name = "clangd" } == 0
+  end, 100)
+  local local_client = vim.lsp.get_client_by_id(local_client_id)
+  if local_client then
+    local_client:stop()
+  end
+  if not guarded then
+    fail "local clangd attached to a remote-managed buffer"
+  end
+  out "local clangd guard: passed"
+end
+
 local names = {}
 for _, client in ipairs(vim.lsp.get_clients { bufnr = bufnr }) do
   table.insert(names, client.name)
@@ -85,6 +166,7 @@ else
 end
 
 local diagnostics = vim.diagnostic.get(bufnr)
+local diagnostic_namespaces = vim.diagnostic.get_namespaces()
 out("diagnostics: " .. tostring(#diagnostics))
 
 for _, diagnostic in ipairs(diagnostics) do
@@ -92,11 +174,17 @@ for _, diagnostic in ipairs(diagnostics) do
 end
 
 for _, diagnostic in ipairs(diagnostics) do
+  local namespace = diagnostic_namespaces[diagnostic.namespace]
+  if namespace and namespace.name:match "^nvim%.lsp%.clangd%." then
+    fail "saw stale local clangd diagnostic"
+  end
   if diagnostic.message:find("sm_52", 1, true)
     or diagnostic.message:find("Cannot find CUDA installation", 1, true)
     or diagnostic.message:find("Cannot find libdevice", 1, true)
+    or diagnostic.message:find("file not found", 1, true)
+    or diagnostic.message:find("No such file or directory", 1, true)
   then
-    fail "saw local clangd CUDA setup diagnostic"
+    fail "saw clangd toolchain setup diagnostic"
   end
 end
 
@@ -104,7 +192,7 @@ if expect_diagnostics and #diagnostics == 0 then
   fail "expected injected remote clangd diagnostic, got none"
 end
 
-if not expect_diagnostics and #diagnostics > 0 then
+if not expect_diagnostics and not allow_diagnostics and #diagnostics > 0 then
   fail "expected clean remote clangd diagnostics, got diagnostics"
 end
 

@@ -13,11 +13,11 @@ B200 pod and maps local paths to remote paths.
 
 | Component | Location | Purpose |
 | --- | --- | --- |
-| Neovim module | `~/.config/nvim/lua/custom/remote_clangd.lua` | Detects matching CUDA buffers, blocks local `clangd`, starts remote clangd. |
-| Project profiles | `~/.config/nvim/lua/custom/remote_clangd_projects.lua` | Private local-to-remote mapping and CUDA target config. |
-| Stdio bridge | `~/.local/bin/remote-clangd` | Starts remote `clangd` over SSH with path mappings. Source: `~/dotfiles/bin/remote-clangd`. |
+| Neovim module | `~/.config/nvim/lua/custom/remote_clangd.lua` | Detects matching C/C++/CUDA buffers, blocks local `clangd`, starts remote clangd. |
+| Project profiles | `~/.config/nvim/lua/custom/remote_clangd_projects.lua` | Private local-to-remote mapping, toolchain, and compilation database config. |
+| Stdio bridge | `~/.local/bin/remote-clangd` | Starts remote `clangd` over SSH with path mappings and either a project or fallback compilation database. Source: `~/dotfiles/bin/remote-clangd`. |
 | Headless checker | `~/.local/bin/check-remote-clangd-nvim` | Tests real Neovim config and remote diagnostics. Source: `~/dotfiles/bin/check-remote-clangd-nvim`. |
-| SSH/sync substrate | `rexec`, `~/.config/rexec/config.yaml` | Keeps the pod SSH shim, port-forward, and Mutagen sync alive. |
+| SSH/sync substrate | `rexec`, `~/.config/rexec/pods.yaml`, `.rexec.yaml` | Keeps the pod SSH shim, port-forward, and Mutagen sync alive. |
 
 The Neovim config is managed separately from this dotfiles repo at
 `~/.config/nvim` / `dukebw/kickstart.nvim`. This document records the workflow
@@ -148,6 +148,13 @@ Optional headless check:
 check-remote-clangd-nvim ~/work/new-repo/path/to/file.cu
 ```
 
+For a project that intentionally enables broad clang-tidy checks, keep reporting
+diagnostics while validating attachment and toolchain resolution:
+
+```bash
+check-remote-clangd-nvim --allow-diagnostics ~/work/new-repo/path/to/file.cpp
+```
+
 ## LSP Startup Sequence
 
 ```mermaid
@@ -177,8 +184,19 @@ messages to stdout, because stdout is the LSP JSON stream.
 
 The workflow does not write `compile_commands.json` into shared repos.
 
-When no project-provided compile database is used, `remote-clangd` generates a
-fallback database in remote scratch space:
+Projects can set `compile_commands_dir` to a path relative to their remote root.
+The bridge fails early if that directory does not contain `compile_commands.json`,
+rather than silently falling back to inaccurate flags.
+
+When the remote host is only a Docker host, set `container` in the project
+profile. The bridge validates the compilation database on the host and runs
+clangd through `docker exec -i` in that container. The worktree must be mounted
+at the same absolute remote path in the container. Container profiles must set
+`compile_commands_dir`; fallback databases are not visible unless explicitly
+mounted into the container.
+
+When no project-provided compile database is configured, `remote-clangd`
+generates a fallback database in remote scratch space:
 
 ```text
 /tmp/remote-clangd/<hash>/compile_commands.json
@@ -199,9 +217,8 @@ clang++-21
 -c <file>
 ```
 
-The immediate goal is accurate editor diagnostics for CUDA/B200 setup. Repos
-with exact build metadata can still be supported later by teaching the wrapper to
-prefer an existing remote `compile_commands.json`.
+The fallback is intended for CUDA projects without exact build metadata. C/C++
+projects should use their generated compilation database.
 
 ## Reconnect And Failure Behavior
 
@@ -211,8 +228,10 @@ Remote clangd is restarted by Neovim, not by a shell loop.
 flowchart TD
   ok[remote clangd running] --> fail{Server exits?}
   fail -->|No| ok
-  fail -->|Yes| detach[LspDetach]
-  detach --> backoff[Restart with bounded exponential backoff]
+  fail -->|Yes| exit[Client on_exit callback]
+  exit --> preflight[Run rexec preflight]
+  preflight --> tunnel[Repair SSH tunnel and flush sync]
+  tunnel --> backoff[Restart with bounded exponential backoff]
   backoff --> retry{Attempts <= 5?}
   retry -->|Yes| start[Start remote clangd again]
   retry -->|No| warn[Notify and stop auto-restarting]
@@ -229,7 +248,7 @@ Expected failure cases:
 - Pod moved or restarted.
 - `kubectl port-forward` died.
 - SSH alias points at a stale tunnel.
-- New pod is missing `clangd-21` / `clang++-21`.
+- Selected pod or tooling container is missing the configured clangd/compiler.
 - Mutagen sync is stale.
 
 Recovery after moving pods:
@@ -271,6 +290,13 @@ injected error:
 check-remote-clangd-nvim --inject ~/work/Wan2.2-b10/wan/kernels/vsa_cuda/vsa_39.cu
 ```
 
+Exercise automatic recovery by terminating the active port-forward during the
+check:
+
+```bash
+check-remote-clangd-nvim --allow-diagnostics --probe-tunnel-recovery ~/work/<repo>/path/to/file.cpp
+```
+
 Expected injected output:
 
 ```text
@@ -280,7 +306,13 @@ diagnostics: 1
 1116:3 Use of undeclared identifier 'definitely_not_declared_for_remote_clangd_probe'
 ```
 
-In interactive Neovim, `:LspInfo` for a matched CUDA buffer should show:
+In interactive Neovim, inspect clients for the current buffer with:
+
+```vim
+:lua vim.print(vim.tbl_map(function(c) return c.name end, vim.lsp.get_clients({ bufnr = 0 })))
+```
+
+For a matched CUDA buffer this should show:
 
 ```text
 remote_clangd_b200
@@ -294,7 +326,8 @@ clangd is still attached or the remote path failed before startup.
 
 - The fallback compile database is intentionally generic; it is for editor
   parsing, not authoritative builds.
-- The setup assumes `clangd-21` and `clang++-21` are available in the pod.
+- Each profile assumes its configured clangd/compiler is available on the pod
+  or in its tooling container.
 - The local Mac remains the source of truth for editing and Git. The pod is
   disposable compute and editor tooling.
 - Long-lived credentials stay local. The pod sees synced source and a temporary
