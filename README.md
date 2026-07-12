@@ -40,6 +40,8 @@ cd ~/dotfiles && ./install.sh
 - `git/.gitconfig` - git with delta integration
 - `zellij/config.kdl` - zellij terminal multiplexer
 - `opencode/opencode.json` - OpenCode config
+- `.claude/skills/opencode-remote/SKILL.md` - private remote OpenCode runbook
+- `launchd/ai.opencode.web.plist` - supervised OpenCode web server
 - `ssh/config.template` - X11 forwarding for Coder
 
 ### Remote Helpers
@@ -50,6 +52,17 @@ cd ~/dotfiles && ./install.sh
 - `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
 - `bin/remote-clangd` - stdio bridge from local Neovim to remote `clangd-21` on the B200 pod
 - `bin/check-remote-clangd-nvim` - headless verification for remote CUDA diagnostics in Neovim
+- `bin/opencode-web-server` - Keychain-authenticated OpenCode web server for Tailscale Serve
+
+## Remote OpenCode
+
+The remote OpenCode setup runs one localhost-only web backend under a macOS
+LaunchAgent. Laptop `oc` clients attach to that backend, while a phone reaches
+it through private Tailscale Serve HTTPS. The password remains in macOS
+Keychain and no tailnet identity or URL is committed.
+
+See [the remote OpenCode skill](.claude/skills/opencode-remote/SKILL.md) for the
+architecture, secure installation, daily workflow, and troubleshooting.
 
 ## Kubernetes Pod Remote Execution
 

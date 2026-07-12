@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.opencode.web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lic</string>
+    <string>exec "$HOME/.local/bin/opencode-web-server"</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>Umask</key>
+  <integer>63</integer>
+</dict>
+</plist>

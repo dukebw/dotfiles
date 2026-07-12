@@ -157,4 +157,18 @@ rlog() {
   "$HOME/.local/bin/rlog" "$@"
 }
 
-alias oc=opencode
+oc() {
+  local opencode_server_password
+
+  opencode_server_password=$(
+    /usr/bin/security find-generic-password \
+      -a "opencode-server" \
+      -s "ai.opencode.web" \
+      -w
+  ) || return 1
+
+  OPENCODE_SERVER_PASSWORD="$opencode_server_password" \
+    command opencode attach http://127.0.0.1:4096 \
+      --dir "$PWD" \
+      "$@"
+}
