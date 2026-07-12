@@ -119,6 +119,12 @@ cd ~/work/new-repo
 REXEC_LOCAL_ROOT="$PWD" REXEC_WORKDIR="/workspace/new-repo" rexec --setup
 ```
 
+When no `.rexec.yaml` exists, the paired root variables form an ephemeral
+worktree config and bypass `~/.config/rexec/config.yaml`. Remote clangd uses the
+same path during preflight, so a new matching checkout does not depend on a
+global fallback. A local `.rexec.yaml` is still preferred for persistent ignore
+rules and normal `r`/`rexec` use.
+
 Check the remote clangd toolchain:
 
 ```bash
@@ -185,15 +191,17 @@ messages to stdout, because stdout is the LSP JSON stream.
 The workflow does not write `compile_commands.json` into shared repos.
 
 Projects can set `compile_commands_dir` to a path relative to their remote root.
-The bridge fails early if that directory does not contain `compile_commands.json`,
-rather than silently falling back to inaccurate flags.
+If that directory does not contain `compile_commands.json`, the bridge logs the
+missing database and generates a remote-only fallback there. This lets a fresh
+worktree start immediately; a later CMake configure overwrites the fallback and
+becomes authoritative without changing editor configuration.
 
 When the remote host is only a Docker host, set `container` in the project
 profile. The bridge validates the compilation database on the host and runs
 clangd through `docker exec -i` in that container. The worktree must be mounted
 at the same absolute remote path in the container. Container profiles must set
-`compile_commands_dir`; fallback databases are not visible unless explicitly
-mounted into the container.
+`compile_commands_dir` to a host path visible at the same location in the
+container, which also gives the fallback a shared location.
 
 When no project-provided compile database is configured, `remote-clangd`
 generates a fallback database in remote scratch space:
@@ -202,7 +210,8 @@ generates a fallback database in remote scratch space:
 /tmp/remote-clangd/<hash>/compile_commands.json
 ```
 
-Each discovered `.cu` / `.cuh` entry gets a CUDA parse command like:
+Fallback generation covers C, C++, CUDA, and header extensions. CUDA entries
+get a parse command like:
 
 ```text
 clang++-21
@@ -217,8 +226,10 @@ clang++-21
 -c <file>
 ```
 
-The fallback is intended for CUDA projects without exact build metadata. C/C++
-projects should use their generated compilation database.
+Fallback commands include the project, `cpp`, `cpp/include`, Cutlass, CUDA, and
+TensorRT include roots. They are editor bootstrapping metadata, not an
+authoritative build configuration; projects should still generate their real
+compilation database when exact flags matter.
 
 ## Reconnect And Failure Behavior
 

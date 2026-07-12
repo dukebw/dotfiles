@@ -51,7 +51,10 @@ quote() {
 
 remote_cmd="set -euo pipefail
 cd $(quote "$remote_root")
-if [[ $(quote "$generate_fallback_compile_commands") == 1 ]]; then
+if [[ $(quote "$generate_fallback_compile_commands") == 1 || ! -f $(quote "$compile_commands_dir/compile_commands.json") ]]; then
+  if [[ $(quote "$generate_fallback_compile_commands") == 0 ]]; then
+    printf 'remote-clangd: compilation database not found; generating fallback: %s\n' $(quote "$compile_commands_dir/compile_commands.json") >&2
+  fi
   mkdir -p $(quote "$compile_commands_dir")
   python3 - $(quote "$remote_root") $(quote "$compile_commands_dir") $(quote "$remote_compiler") $(quote "$cuda_path") $(quote "$cuda_arch") <<'PY'
 import json
@@ -70,7 +73,27 @@ skip_dirs = {
     'node_modules',
     'venv',
 }
-cuda_exts = {'.cu', '.cuh'}
+source_languages = {
+    '.c': ('c', 'c17'),
+    '.cc': ('c++', 'c++17'),
+    '.cpp': ('c++', 'c++17'),
+    '.cu': ('cuda', 'c++17'),
+    '.cuh': ('cuda', 'c++17'),
+    '.cxx': ('c++', 'c++17'),
+    '.h': ('c++-header', 'c++17'),
+    '.hh': ('c++-header', 'c++17'),
+    '.hpp': ('c++-header', 'c++17'),
+    '.hxx': ('c++-header', 'c++17'),
+}
+include_dirs = [
+    root,
+    os.path.join(root, 'cpp'),
+    os.path.join(root, 'cpp', 'include'),
+    os.path.join(root, '3rdparty', 'cutlass', 'include'),
+    os.path.join(cuda_path, 'include'),
+    '/usr/local/tensorrt/include',
+]
+include_args = [arg for path in include_dirs for arg in ('-I', path)]
 entries = []
 
 for dirpath, dirnames, filenames in os.walk(root):
@@ -80,34 +103,38 @@ for dirpath, dirnames, filenames in os.walk(root):
     ]
 
     for filename in filenames:
-        if os.path.splitext(filename)[1].lower() not in cuda_exts:
+        language = source_languages.get(os.path.splitext(filename)[1].lower())
+        if language is None:
             continue
 
         path = os.path.join(dirpath, filename)
-        entries.append({
-            'directory': dirpath,
-            'file': path,
-            'arguments': [
-                compiler,
-                '-x', 'cuda',
+        language_name, standard = language
+        arguments = [
+            compiler,
+            '-x', language_name,
+            *include_args,
+            '-std=' + standard,
+            '-fPIC',
+        ]
+        if language_name == 'cuda':
+            arguments.extend([
                 '--cuda-path=' + cuda_path,
                 '--no-cuda-version-check',
                 '--cuda-gpu-arch=' + cuda_arch,
-                '-I' + os.path.join(cuda_path, 'include'),
-                '-std=c++17',
-                '-O3',
-                '-fPIC',
-                '-c',
-                path,
-            ],
+            ])
+        arguments.extend(['-c', path])
+        entries.append({
+            'directory': dirpath,
+            'file': path,
+            'arguments': arguments,
         })
 
-with open(os.path.join(build_dir, 'compile_commands.json'), 'w', encoding='utf-8') as f:
+output_path = os.path.join(build_dir, 'compile_commands.json')
+temporary_path = output_path + f'.{os.getpid()}.tmp'
+with open(temporary_path, 'w', encoding='utf-8') as f:
     json.dump(entries, f, indent=2)
+os.replace(temporary_path, output_path)
 PY
-elif [[ ! -f $(quote "$compile_commands_dir/compile_commands.json") ]]; then
-  printf 'remote-clangd: compilation database not found: %s\n' $(quote "$compile_commands_dir/compile_commands.json") >&2
-  exit 1
 fi
 if [[ -n $(quote "$container") ]]; then
   exec docker exec -i $(quote "$container") $(quote "$remote_clangd") --compile-commands-dir=$(quote "$compile_commands_dir") --path-mappings=$(quote "$local_root=$remote_root")

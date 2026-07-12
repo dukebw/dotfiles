@@ -124,7 +124,10 @@ Mutagen session names are always derived: `<worktree-dirname>-<podkey>`
 
 Pod selection precedence: `-p/--pod <key>` flag, then `$REXEC_POD`, then the
 registry `default:`. Worktree config discovery: `--config`, `REXEC_CONFIG`,
-nearest `.rexec.yaml`, then `~/.config/rexec/config.yaml`.
+nearest `.rexec.yaml`, paired `REXEC_LOCAL_ROOT` + `REXEC_WORKDIR` as a
+config-free invocation, then `~/.config/rexec/config.yaml`. The paired roots
+bypass the global fallback; setting only one remains an override on a resolved
+config.
 
 | Environment variable | Meaning |
 | --- | --- |

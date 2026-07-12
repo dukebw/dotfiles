@@ -186,7 +186,15 @@ An unknown key fails loud with the known keys listed.
 1. `--config <path>`
 2. `REXEC_CONFIG=<path>`
 3. The nearest `.rexec.yaml` found by walking upward from the current directory
-4. `~/.config/rexec/config.yaml`
+4. A config-free invocation when both `REXEC_LOCAL_ROOT` and `REXEC_WORKDIR`
+   are set
+5. `~/.config/rexec/config.yaml`
+
+The paired root variables are a complete ephemeral worktree config, used by
+remote editor tooling and one-off setup. They deliberately bypass the global
+fallback so an unrelated or stale worktree config cannot break that invocation.
+Setting only one remains an override on a resolved config and does not enable
+config-free operation.
 
 Supported environment overrides:
 

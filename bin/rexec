@@ -70,7 +70,7 @@ def find_project_config(start: Path) -> Path | None:
     return None
 
 
-def resolve_config_path(config_arg: str | None) -> Path:
+def resolve_config_path(config_arg: str | None) -> Path | None:
     if config_arg:
         return expand_path(config_arg)
 
@@ -80,6 +80,11 @@ def resolve_config_path(config_arg: str | None) -> Path:
     project_config = find_project_config(Path.cwd())
     if project_config:
         return project_config
+
+    # Remote editor tooling supplies both roots for worktrees that do not have
+    # a local config yet; do not make that path depend on an unrelated fallback.
+    if os.environ.get("REXEC_LOCAL_ROOT") and os.environ.get("REXEC_WORKDIR"):
+        return None
 
     return DEFAULT_CONFIG
 
@@ -178,16 +183,19 @@ def resolve_pod_entry(registry: dict[str, Any], key: str) -> dict[str, Any]:
     return merged
 
 
-def load_config(path: Path, pod_flag: str | None) -> dict[str, Any]:
-    if not path.exists():
+def load_config(path: Path | None, pod_flag: str | None) -> dict[str, Any]:
+    if path is not None and not path.exists():
         raise SystemExit(
             f"Missing rexec worktree config: {path}\n"
             "Create it with remote_workdir (and optional ignore rules); pod "
             f"reachability lives in {POD_REGISTRY}."
         )
 
-    with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
+    if path is None:
+        raw = {}
+    else:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
     if not isinstance(raw, dict):
         raise SystemExit(f"Invalid rexec config: {path}")
 
@@ -209,11 +217,12 @@ def load_config(path: Path, pod_flag: str | None) -> dict[str, Any]:
     cfg = resolve_pod_entry(registry, pod_key)
     cfg["registry"] = registry
 
-    cfg["config_path"] = str(path)
+    cfg["config_path"] = str(path) if path is not None else "<environment>"
     cfg["state_dir"] = str(expand_path(raw.get("state_dir", DEFAULT_STATE_DIR)))
     # The worktree root is where its config lives, unless declared otherwise
     # (the global-fallback config at DEFAULT_CONFIG must declare it).
-    cfg["local_root"] = str(expand_path(raw.get("local_root", path.parent)))
+    local_root = raw.get("local_root", path.parent if path is not None else None)
+    cfg["local_root"] = str(expand_path(local_root)) if local_root else None
     if raw.get("remote_workdir"):
         cfg["remote_workdir"] = raw["remote_workdir"]
     cfg["ignore"] = raw.get("ignore", [])
@@ -864,7 +873,8 @@ Examples:
         "--config",
         help=(
             "Worktree config YAML path. Defaults to $REXEC_CONFIG, then nearest "
-            f"{PROJECT_CONFIG_NAME}, then {DEFAULT_CONFIG}."
+            f"{PROJECT_CONFIG_NAME}, paired $REXEC_LOCAL_ROOT/$REXEC_WORKDIR, "
+            f"then {DEFAULT_CONFIG}."
         ),
     )
     parser.add_argument(

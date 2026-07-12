@@ -81,8 +81,10 @@ Config is local-only because it is machine- and pod-specific, and splits in
 two (ADR 0002): a global pod registry (`~/.config/rexec/pods.yaml`: pod key →
 k8s pod name, ssh alias, tunnel port) and a per-worktree `.rexec.yaml` with
 sync facts only. Pod selection: `-p/--pod`, then `$REXEC_POD`, then the
-registry default. See [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md)
-for architecture diagrams, setup, security model, config shape, and troubleshooting.
+registry default. Tooling can provide both `REXEC_LOCAL_ROOT` and
+`REXEC_WORKDIR` for a config-free one-off invocation. See
+[`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md) for architecture
+diagrams, setup, security model, config shape, and troubleshooting.
 
 For CUDA editing, Neovim can route matching local `*.cu` buffers to remote
 `clangd-21` in the same B200 pod. See [`docs/remote-clangd.md`](docs/remote-clangd.md)
