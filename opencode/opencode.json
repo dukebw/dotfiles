@@ -1,5 +1,5 @@
 {
-  "model": "openai/gpt-5.5-fast",
+  "model": "openai/gpt-5.6-sol-fast",
   "$schema": "https://opencode.ai/config.json",
   "plugin": ["opencode-gemini-auth@latest"],
   "mcp": {
@@ -40,6 +40,19 @@
         "gpt-5.5-fast": {
           "options": {
             "reasoningSummary": "detailed"
+          }
+        },
+        "gpt-5.6-sol-fast": {
+          "options": {
+            "reasoningSummary": "detailed",
+            "reasoningEffort": "max"
+          },
+          "variants": {
+            "max": {
+              "reasoningEffort": "max",
+              "reasoningSummary": "auto",
+              "include": ["reasoning.encrypted_content"]
+            }
           }
         }
       }
