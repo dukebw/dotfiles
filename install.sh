@@ -66,12 +66,14 @@ backup_and_link "$DOTFILES_DIR/bin/check-remote-clangd-nvim" "$HOME/.local/bin/c
 backup_and_link "$DOTFILES_DIR/.local/bin/pydebug-setup" "$HOME/.local/bin/pydebug-setup"
 backup_and_link "$DOTFILES_DIR/bin/rexec" "$HOME/.local/bin/rexec"
 backup_and_link "$DOTFILES_DIR/bin/opencode-web-server" "$HOME/.local/bin/opencode-web-server"
+backup_and_link "$DOTFILES_DIR/bin/here-now-publish" "$HOME/.local/bin/here-now-publish"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 backup_and_link "$DOTFILES_DIR/launchd/ai.opencode.web.plist" "$HOME/Library/LaunchAgents/ai.opencode.web.plist"
 
 mkdir -p "$HOME/.config/opencode"
 backup_and_link "$DOTFILES_DIR/opencode/opencode.json" "$HOME/.config/opencode/opencode.json"
+backup_and_link "$DOTFILES_DIR/opencode/commands" "$HOME/.config/opencode/commands"
 backup_and_link "$DOTFILES_DIR/opencode/plugins" "$HOME/.config/opencode/plugins"
 backup_and_link "$DOTFILES_DIR/opencode/scripts" "$HOME/.config/opencode/scripts"
 backup_and_link "$DOTFILES_DIR/opencode/tui.json" "$HOME/.config/opencode/tui.json"

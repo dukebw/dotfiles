@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import urlparse
+
+
+MAX_SIZE_BYTES = 5 * 1024 * 1024
+ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+SLUG_RE = re.compile(r"^[a-z]+-[a-z]+-[a-z0-9]{4,8}$")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Publish a file to here-now and print its stable URL."
+    )
+    parser.add_argument("file", type=Path)
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("HERE_NOW_BASE_URL"),
+        help="here-now API base URL discovered from http://go/here-now-llm",
+    )
+    parser.add_argument(
+        "--alias",
+        help="local key used to update the same here-now share on later runs",
+    )
+    parser.add_argument("--title")
+    parser.add_argument("--summary")
+    parser.add_argument("--json", action="store_true", dest="print_json")
+    return parser.parse_args()
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+def main() -> None:
+    args = parse_args()
+    if not args.base_url:
+        fail("pass --base-url using the current value from http://go/here-now-llm")
+
+    base_url = args.base_url.rstrip("/")
+    parsed_url = urlparse(base_url)
+    if parsed_url.scheme != "https" or not parsed_url.netloc:
+        fail("--base-url must be an HTTPS origin")
+    if (
+        parsed_url.username
+        or parsed_url.password
+        or parsed_url.path
+        or parsed_url.params
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
+        fail("--base-url must not contain credentials, a path, or query data")
+
+    artifact = args.file.expanduser().resolve()
+    if not artifact.is_file():
+        fail(f"artifact is not a readable file: {artifact}")
+    if artifact.stat().st_size > MAX_SIZE_BYTES:
+        fail(f"artifact exceeds the {MAX_SIZE_BYTES}-byte here-now limit")
+
+    state_file: Path | None = None
+    share_slug: str | None = None
+    if args.alias:
+        if not ALIAS_RE.fullmatch(args.alias):
+            fail("--alias must match ^[a-z0-9][a-z0-9-]*$")
+        state_dir = Path.home() / ".local" / "state" / "here-now" / "aliases"
+        state_file = state_dir / args.alias
+        if state_file.exists():
+            share_slug = state_file.read_text().strip()
+            if not SLUG_RE.fullmatch(share_slug):
+                fail(f"invalid here-now slug in {state_file}")
+
+    endpoint = (
+        f"{base_url}/api/shares/{share_slug}"
+        if share_slug
+        else f"{base_url}/api/publish"
+    )
+    command = [
+        "curl",
+        "--fail-with-body",
+        "--silent",
+        "--show-error",
+        "--connect-timeout",
+        "10",
+        "--max-time",
+        "60",
+    ]
+    if share_slug:
+        command.extend(["--request", "PUT"])
+    command.extend(["--form", f"file=@{artifact}"])
+    if args.title:
+        command.extend(["--form-string", f"title={args.title}"])
+    if args.summary:
+        command.extend(["--form-string", f"summary={args.summary}"])
+    command.append(endpoint)
+
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        if result.stdout:
+            print(result.stdout, file=sys.stderr, end="")
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="")
+        raise SystemExit(result.returncode)
+
+    try:
+        response = json.loads(result.stdout)
+        response_slug = response["slug"]
+        response_url = response["url"]
+        response_version = response["version"]
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        fail(f"invalid here-now response: {error}")
+
+    if not isinstance(response_slug, str) or not SLUG_RE.fullmatch(response_slug):
+        fail("here-now returned an invalid slug")
+    response_url_parts = urlparse(response_url) if isinstance(response_url, str) else None
+    if (
+        not response_url_parts
+        or response_url_parts.scheme != "https"
+        or response_url_parts.netloc != parsed_url.netloc
+        or response_url_parts.path != f"/s/{response_slug}"
+        or response_url_parts.params
+        or response_url_parts.query
+        or response_url_parts.fragment
+    ):
+        fail("here-now returned an invalid URL")
+    if not isinstance(response_version, int) or response_version < 1:
+        fail("here-now returned an invalid version")
+
+    if state_file and not share_slug:
+        state_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary_state_file = state_file.with_suffix(".tmp")
+        temporary_state_file.write_text(f"{response_slug}\n")
+        temporary_state_file.chmod(0o600)
+        temporary_state_file.replace(state_file)
+
+    if args.print_json:
+        print(json.dumps(response, separators=(",", ":")))
+    else:
+        print(response_url)
+
+
+if __name__ == "__main__":
+    main()

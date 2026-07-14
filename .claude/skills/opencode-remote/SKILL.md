@@ -1,6 +1,6 @@
 ---
 name: opencode-remote
-description: Operate, install, and troubleshoot the macOS remote OpenCode setup using launchd, Keychain, Tailscale Serve, and the oc attach function. Use when working with remote OpenCode, phone access, port 4096, ai.opencode.web, Tailscale Serve, or shared oc sessions.
+description: Operate, install, and troubleshoot the macOS remote OpenCode setup and publish artifacts through here-now. Use when working with remote OpenCode, phone access, port 4096, ai.opencode.web, Tailscale Serve, shared oc sessions, generated reports, or here-now.
 ---
 
 # Remote OpenCode
@@ -18,6 +18,11 @@ Tailscale Serve
 OpenCode Web, supervised by launchd
     | repository and shell tools on the Mac
 Laptop TUI clients using `opencode attach`
+
+Generated static artifact
+    | authenticated publication from the Baseten Tailnet
+here-now
+    | centrally hosted company-wide share URL
 ```
 
 ## Security invariants
@@ -27,6 +32,12 @@ Laptop TUI clients using `opencode attach`
 - Store the password only in macOS Keychain. Never print it, pass it as a
   command argument, write it to a plist or environment file, or commit it.
 - Use `tailscale serve`, never `tailscale funnel`. Funnel is public.
+- Keep generated reports self-contained and free of credentials, customer
+  secrets, shell tokens, active scripts, or data requiring narrower access.
+  Treat here-now artifacts as visible company-wide.
+- Resolve `go/<slug>` as `http://go/<slug>` because go links use Tailscale
+  MagicDNS. Read `http://go/here-now-llm` before publishing and use its current
+  API contract rather than a copied endpoint.
 - Do not commit the Tailscale URL, IPs, account email, device names, auth keys,
   certificates, logs, or process state.
 - Run service restarts from an independent Terminal. Restarting the server
@@ -38,6 +49,8 @@ Laptop TUI clients using `opencode attach`
 | --- | --- | --- |
 | Server wrapper | `~/dotfiles/bin/opencode-web-server` | `~/.local/bin/opencode-web-server` |
 | LaunchAgent | `~/dotfiles/launchd/ai.opencode.web.plist` | `~/Library/LaunchAgents/ai.opencode.web.plist` |
+| here-now publisher | `~/dotfiles/bin/here-now-publish` | `~/.local/bin/here-now-publish` |
+| Global commands | `~/dotfiles/opencode/commands` | `~/.config/opencode/commands` |
 | Attach function | `~/dotfiles/zsh/.zshrc` | `~/.zshrc` |
 | This skill | `~/dotfiles/.claude/skills/opencode-remote` | `~/.claude/skills/opencode-remote` |
 
@@ -127,6 +140,33 @@ as user `opencode`, and add the page to the home screen. Android Always-on VPN
 can keep Tailscale connected; do not enable blocking connections without VPN
 unless that behavior is explicitly desired.
 
+## Publish artifacts with here-now
+
+Use here-now for static HTML, Markdown, and small text/code bundles intended
+for company-wide internal access. Do not use the user-owned Mac as the coworker
+hosting layer.
+
+Read the live agent instructions before every publication:
+
+```zsh
+curl -fsSL http://go/here-now-llm
+```
+
+Pass the current Tailscale base URL from those instructions to the publisher:
+
+```zsh
+here-now-publish \
+  --base-url <base-url> \
+  --alias <local-alias> \
+  --title <title> \
+  <artifact.html>
+```
+
+The first publication creates a share. Later publications with the same alias
+add versions to that share and print the same stable URL. Alias mappings live
+only under `~/.local/state/here-now/aliases`; they must not be committed. Omit
+`--alias` when a fresh share is desired.
+
 ## Daily use
 
 The `oc` shell function retrieves the password from Keychain and attaches the
@@ -179,6 +219,7 @@ Check in this order:
 launchctl print gui/$UID/ai.opencode.web
 lsof -nP -iTCP:4096 -sTCP:LISTEN
 curl -o /dev/null -sS -w '%{http_code}\n' http://127.0.0.1:4096/global/health
+curl -fsSL http://go/here-now-llm
 tailscale serve status
 tailscale status
 ```
