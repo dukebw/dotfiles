@@ -46,6 +46,18 @@ Runs the equivalent of:
 kubectl get pods -A --field-selector spec.nodeName=<node> -o wide
 ```
 
+### List Your GPU Fleet
+
+```bash
+b10-gpu fleet
+b10-gpu --namespace dynamo fleet
+```
+
+By default, fleet discovery queries both personal dev-pod namespaces:
+`baseten` and `baseten-devenv`. Results include the namespace in each pod name.
+`dynamo` is intentionally excluded because it contains managed serving
+workloads; pass `--namespace dynamo` for an explicit one-off query.
+
 ### Map GPU Owners
 
 ```bash

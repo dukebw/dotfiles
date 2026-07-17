@@ -50,14 +50,18 @@ def fleet() -> dict:
     return json.loads(proc.stdout)
 
 
-def live_pane_pods() -> set[str]:
+def pod_key(pod: dict) -> str:
+    return f"{pod['namespace']}/{pod['name']}"
+
+
+def live_pane_keys() -> set[str]:
     proc = subprocess.run(["pgrep", "-fl", MARKER], capture_output=True, text=True)
-    pods = set()
+    keys = set()
     for line in proc.stdout.splitlines():
         m = re.search(rf"{MARKER}=(\S+)", line)
         if m:
-            pods.add(m.group(1))
-    return pods
+            keys.add(m.group(1))
+    return keys
 
 
 def geometry(n: int) -> list[dict[str, str]]:
@@ -87,32 +91,37 @@ def main() -> None:
     if not os.environ.get("ZELLIJ"):
         sys.exit("gpu-fleet must run inside a Zellij session")
     data = fleet()
-    pods = [p["name"] for p in data["pods"]]
+    pods = data["pods"]
     if not pods:
-        fail(f"no Running pods owned by {data['owner']!r} in {data['namespace']}")
+        fail(
+            f"no Running pods owned by {data['owner']!r} in "
+            f"{', '.join(data['namespaces'])}"
+        )
 
-    if set(pods) == live_pane_pods():
+    if {pod_key(pod) for pod in pods} == live_pane_keys():
         subprocess.run(["zellij", "action", "toggle-floating-panes"], check=False)
         return
 
     subprocess.run(["pkill", "-f", MARKER], check=False)  # panes close via close-on-exit
 
     for pod, geo in zip(pods, geometry(len(pods))):
-        node = next(p["node"] for p in data["pods"] if p["name"] == pod)
+        namespace = pod["namespace"]
+        name = pod["name"]
+        node = pod["node"]
         cmd = [
             "zellij", "run",
             "--floating", "--close-on-exit",
-            "--name", f"nvitop@{short(pod)} [{node.split('-')[-1]}]",
+            "--name", f"nvitop@{short(name)} [{node.split('-')[-1]}]",
             "-x", geo["x"], "-y", geo["y"],
             "--width", geo["width"], "--height", geo["height"],
             "--",
-            "env", f"{MARKER}={pod}", f"KUBECONFIG={data['kubeconfig']}",
-            "kubectl", "exec", "-it", "-n", data["namespace"], pod,
+            "env", f"{MARKER}={pod_key(pod)}", f"KUBECONFIG={data['kubeconfig']}",
+            "kubectl", "exec", "-it", "-n", namespace, name,
             "--", "uvx", "--from", "nvitop", "nvitop",
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
-            fail(f"zellij run failed for {pod}:\n{proc.stderr.strip()}")
+            fail(f"zellij run failed for {pod_key(pod)}:\n{proc.stderr.strip()}")
 
 
 if __name__ == "__main__":

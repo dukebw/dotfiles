@@ -22,6 +22,7 @@ from typing import Any
 DEFAULT_RCLI_KUBECONFIG_DIR = Path.home() / ".rcli" / "kubeconfig"
 DEFAULT_GPU_PRODUCT = "NVIDIA-B200"
 DEFAULT_DEBUG_NAMESPACE = "default"
+DEFAULT_FLEET_NAMESPACES = ("baseten", "baseten-devenv")
 
 
 class CommandError(RuntimeError):
@@ -568,25 +569,34 @@ def cmd_owner(args: argparse.Namespace) -> None:
         delete_debugger(ctx, debugger_pod)
 
 
-def owned_pods(ctx: dict[str, Any], owner_prefix: str, all_phases: bool) -> list[dict[str, str]]:
-    data = kubectl_json(ctx, ["-n", ctx["namespace"], "get", "pods", "-o", "json"])
+def owned_pods(
+    ctx: dict[str, Any],
+    namespaces: list[str],
+    owner_prefix: str,
+    all_phases: bool,
+) -> list[dict[str, str]]:
+    data = kubectl_json(ctx, ["get", "pods", "--all-namespaces", "-o", "json"])
+    namespace_set = set(namespaces)
     rows = []
     for pod in data.get("items", []):
-        name = pod.get("metadata", {}).get("name", "")
-        if not name.startswith(owner_prefix):
+        metadata = pod.get("metadata", {})
+        namespace = metadata.get("namespace", "")
+        name = metadata.get("name", "")
+        if namespace not in namespace_set or not name.startswith(owner_prefix):
             continue
         phase = pod.get("status", {}).get("phase", "")
         if not all_phases and phase != "Running":
             continue
         rows.append(
             {
+                "namespace": namespace,
                 "name": name,
                 "node": pod.get("spec", {}).get("nodeName", ""),
                 "phase": phase,
                 "ready": pod_ready_summary(pod),
             }
         )
-    return sorted(rows, key=lambda row: row["name"])
+    return sorted(rows, key=lambda row: (row["namespace"], row["name"]))
 
 
 def cmd_fleet(args: argparse.Namespace) -> None:
@@ -599,13 +609,14 @@ def cmd_fleet(args: argparse.Namespace) -> None:
     owner = args.owner or os.environ.get("FLEET_USER") or os.environ.get("USER", "")
     if not owner:
         raise CommandError("Cannot determine owner: pass --owner or set FLEET_USER/USER")
-    pods = owned_pods(ctx, owner, args.all_phases)
+    namespaces = [args.namespace] if args.namespace else list(DEFAULT_FLEET_NAMESPACES)
+    pods = owned_pods(ctx, namespaces, owner, args.all_phases)
     if ctx["json"]:
         print(
             json.dumps(
                 {
                     "owner": owner,
-                    "namespace": ctx["namespace"],
+                    "namespaces": namespaces,
                     "kubeconfig": ctx["kubeconfig"],
                     "pods": pods,
                 },
@@ -614,10 +625,13 @@ def cmd_fleet(args: argparse.Namespace) -> None:
         )
         return
     if not pods:
-        print(f"No pods owned by {owner!r} in namespace {ctx['namespace']}")
+        print(f"No pods owned by {owner!r} in namespaces {', '.join(namespaces)}")
         return
     for pod in pods:
-        print(f"{pod['name']}\t{pod['phase']}\t{pod['ready']}\t{pod['node']}")
+        print(
+            f"{pod['namespace']}/{pod['name']}\t"
+            f"{pod['phase']}\t{pod['ready']}\t{pod['node']}"
+        )
 
 
 def cmd_move(args: argparse.Namespace) -> None:

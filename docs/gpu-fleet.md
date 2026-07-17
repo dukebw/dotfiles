@@ -12,17 +12,20 @@ q       quit one nvitop (its pane closes)
 
 ## How it works
 
-1. `b10-gpu fleet` asks **Kubernetes** which pods you own — pods in the dev
-   namespace of the rcli-selected context whose name starts with your user
-   prefix (`$FLEET_USER`, default `$USER`). Local `.rexec*.yaml` files play no
-   part: they are sync plumbing, not an authority (ADR 0001).
+1. `b10-gpu fleet` asks **Kubernetes** which pods you own — pods in the
+   `baseten` and `baseten-devenv` namespaces of the rcli-selected context whose
+   name starts with your user prefix (`$FLEET_USER`, default `$USER`). Local
+   `.rexec*.yaml` files play no part: they are sync plumbing, not an authority
+   (ADR 0001). The `dynamo` namespace is excluded because it contains managed
+   serving workloads rather than interactive dev pods.
 2. Each pane runs `kubectl exec -it <pod> -- uvx --from nvitop nvitop`. No ssh
    shim, no port-forward: a freshly created pod is monitorable the moment it
    is Running, and dead tunnels can't take the monitor down.
 3. **Reconcile by respawn**: pressing `C-a F` re-queries the fleet. If the
    live panes already match, it just toggles the layer. If the fleet changed,
    all fleet panes are killed and respawned with fresh layout. Pane processes
-   are tracked via a `GPU_FLEET_PANE=<pod>` marker in their command line.
+   are tracked via a `GPU_FLEET_PANE=<namespace>/<pod>` marker in their command
+   line.
 4. **Adaptive layout**: 1 pod → full-size; 2–3 → side-by-side columns;
    more → full-size cascade you cycle through (nvitop needs ~80 columns, so
    tiling stops at three).
@@ -39,3 +42,5 @@ q       quit one nvitop (its pane closes)
 - `FLEET_USER` — owner prefix if it differs from `$USER`.
 - `b10-gpu fleet [--json|--all-phases|--owner X]` — the underlying query,
   usable standalone.
+- `b10-gpu --namespace <namespace> fleet` — override discovery to one namespace
+  for a one-off query, including `dynamo` when explicitly needed.
