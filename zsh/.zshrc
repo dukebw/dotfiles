@@ -108,6 +108,16 @@ claude-remote() {
   caffeinate -i /Users/brendanduke/.local/bin/claude "$@" --remote-control "Baseten Remote"
 }
 
+lidawake() {
+  if [[ "$(pmset -g | awk '/SleepDisabled/ { print $2 }')" == 1 ]]; then
+    sudo pmset -a disablesleep 0
+    echo "Closed-lid wake disabled"
+  else
+    sudo pmset -a disablesleep 1
+    echo "Closed-lid wake enabled"
+  fi
+}
+
 # Homebrew
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
