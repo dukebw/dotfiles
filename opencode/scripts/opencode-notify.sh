@@ -10,12 +10,15 @@ session_id="${1:?usage: opencode-notify.sh <session_id> [session_title]}"
 session_title="${2:-opencode session}"
 
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+log() { echo "$(date '+%F %T') opencode-notify: $*" >>"$HOME/.cache/pane-notify.log"; }
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 resolved=$("$script_dir/opencode-resolve-pane.sh" "$session_id" "$session_title" || true)
+log "sid=$session_id title='$session_title' resolved='${resolved:-NONE}'"
 if [ -n "$resolved" ]; then
   read -r zellij_session pane_id <<<"$resolved"
   if "$HOME/.local/bin/zellij-pane-is-focused" "$zellij_session" "$pane_id"; then
+    log "suppressed: $pane_id in view"
     exit 0
   fi
   # Bake the resolved pane into the click action: re-resolving on click costs

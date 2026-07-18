@@ -11,6 +11,7 @@ session_title="${2:-}"
 
 script_dir=$(cd "$(dirname "$0")" && pwd)
 resolved=$("$script_dir/opencode-resolve-pane.sh" "$session_id" "$session_title" || true)
+echo "$(date '+%F %T') opencode-focus-pane: sid=$session_id title='$session_title' resolved='${resolved:-NONE}'" >>"$HOME/.cache/pane-notify.log"
 if [ -n "$resolved" ]; then
   read -r zellij_session pane_id <<<"$resolved"
   exec "$HOME/.local/bin/zellij-focus-pane" "$zellij_session" "$pane_id"

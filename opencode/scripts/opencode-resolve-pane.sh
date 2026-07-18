@@ -20,12 +20,20 @@ for zs in $(running_zellij_sessions); do
   match=$(zellij --session "$zs" action list-panes --json -c 2>/dev/null |
     jq -r --arg sid "$session_id" --arg t "$session_title" '
       [ .[] | select(.is_plugin == false) ] as $panes
+      # Title matching only against panes running an opencode TUI — other
+      # tools (Claude Code) set look-alike session-topic titles.
+      | [ $panes[] | select(.pane_command // "" | contains("opencode")) ] as $ocpanes
       | ( [ $panes[] | select(.pane_command // "" | contains($sid)) ]
         + (if $t == "" then [] else
-            [ $panes[] | select((.title // "") == $t) ]
-          + [ $panes[] | (.title // "") as $pt
+            [ $ocpanes[] | select((.title // "") == $t) ]
+            # Fuzzy: manually renamed panes carry prefixes ("OC | ...") and
+            # get ellipsis-truncated, so also accept a pane title containing
+            # a healthy prefix of the session title.
+          + [ $ocpanes[] | (.title // "" | sub("(\\.\\.\\.|…)$"; "")) as $pt
               | select(($pt | length) >= 12
-                and (($pt | inside($t)) or ($t | inside($pt)))) ]
+                and (($pt | inside($t)) or ($t | inside($pt))
+                  or (($t[0:20]) as $tp
+                      | ($tp | length) >= 12 and ($pt | contains($tp))))) ]
           end) )
       | first | if . == null then empty else "terminal_\(.id)" end')
   if [ -n "$match" ]; then

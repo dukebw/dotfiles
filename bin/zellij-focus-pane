@@ -8,7 +8,8 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 zellij_session="${1:?usage: zellij-focus-pane <zellij_session> <pane_id>}"
 pane_id="${2:?usage: zellij-focus-pane <zellij_session> <pane_id>}"
 
-zellij --session "$zellij_session" action focus-pane-id "$pane_id" 2>/dev/null || true
+focus_err=$(zellij --session "$zellij_session" action focus-pane-id "$pane_id" 2>&1) || true
+echo "$(date '+%F %T') zellij-focus-pane: session=$zellij_session pane=$pane_id err='${focus_err:-}'" >>"$HOME/.cache/pane-notify.log"
 
 zellij_clients=$(ps ax -o tty=,command= | grep -E "[z]ellij(\s|$)" |
   grep -v -- "--server" | grep -v " action ")
