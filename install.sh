@@ -80,6 +80,9 @@ backup_and_link "$DOTFILES_DIR/opencode/plugins" "$HOME/.config/opencode/plugins
 backup_and_link "$DOTFILES_DIR/opencode/scripts" "$HOME/.config/opencode/scripts"
 backup_and_link "$DOTFILES_DIR/opencode/tui.json" "$HOME/.config/opencode/tui.json"
 
+mkdir -p "$HOME/.claude"
+backup_and_link "$DOTFILES_DIR/claude/settings.json" "$HOME/.claude/settings.json"
+
 mkdir -p "$HOME/.claude/skills"
 for skill_dir in "$DOTFILES_DIR/.claude/skills"/*; do
     if [ -d "$skill_dir" ]; then
