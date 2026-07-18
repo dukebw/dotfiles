@@ -2,16 +2,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Plugin } from "@opencode-ai/plugin";
 
-const FOCUS_SCRIPT = join(
+const NOTIFY_SCRIPT = join(
   homedir(),
   ".config",
   "opencode",
   "scripts",
-  "opencode-focus-pane.sh",
+  "opencode-notify.sh",
 );
-const TERMINAL_NOTIFIER = "/opt/homebrew/bin/terminal-notifier";
-
-const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 export const NotifyPlugin: Plugin = async ({ client, $ }) => {
   return {
@@ -32,13 +29,13 @@ export const NotifyPlugin: Plugin = async ({ client, $ }) => {
       }
 
       const title = session.data?.title ?? "session";
-      const clickCommand = `${shellQuote(FOCUS_SCRIPT)} ${shellQuote(sessionID)} ${shellQuote(title)}`;
 
       try {
-        // -group coalesces repeat notifications per session instead of stacking.
-        await $`${TERMINAL_NOTIFIER} -group ${sessionID} -title ${"opencode — turn finished"} -message ${title} -sound Glass -execute ${clickCommand}`;
+        // The script owns the notify decision (focus suppression, click
+        // action), so it can change without an opencode server restart.
+        await $`${NOTIFY_SCRIPT} ${sessionID} ${title}`;
       } catch {
-        // terminal-notifier missing/failed: plain notification, no click action.
+        // Script missing/failed: plain notification, no click action.
         const script = `display notification "${title.replace(/"/g, '\\"')}" with title "opencode — turn finished" sound name "Glass"`;
         await $`osascript -e ${script}`;
       }

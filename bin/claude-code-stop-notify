@@ -10,6 +10,12 @@ input=$(cat)
 session_id=$(echo "$input" | jq -r '.session_id // "claude"')
 cwd=$(echo "$input" | jq -r '.cwd // ""')
 
+# Quiet if the user is already looking at this pane.
+if [ -n "${ZELLIJ_PANE_ID:-}" ] && [ -n "${ZELLIJ_SESSION_NAME:-}" ] &&
+  "$HOME/.local/bin/zellij-pane-is-focused" "$ZELLIJ_SESSION_NAME" "terminal_$ZELLIJ_PANE_ID"; then
+  exit 0
+fi
+
 # Prefer the pane title (Claude Code sets it to the session topic); fall back
 # to the working-directory basename.
 message=$(basename "${cwd:-$PWD}")

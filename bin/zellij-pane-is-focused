@@ -1,0 +1,18 @@
+#!/bin/bash
+# Exit 0 when the user is looking at the given zellij pane right now: some
+# client of the session has it focused AND iTerm2 is the frontmost app.
+# Used to suppress turn-finished notifications for a pane already in view.
+set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+zellij_session="${1:?usage: zellij-pane-is-focused <zellij_session> <pane_id>}"
+pane_id="${2:?usage: zellij-pane-is-focused <zellij_session> <pane_id>}"
+
+zellij --session "$zellij_session" action list-clients 2>/dev/null |
+  awk 'NR>1{print $2}' | grep -qx "$pane_id" || exit 1
+
+front_app=$(lsappinfo info -only name "$(lsappinfo front)" 2>/dev/null)
+case "$front_app" in
+*iTerm*) exit 0 ;;
+*) exit 1 ;;
+esac
