@@ -12,9 +12,13 @@ session_id=$(echo "$input" | jq -r '.session_id // "claude"')
 cwd=$(echo "$input" | jq -r '.cwd // ""')
 event=$(echo "$input" | jq -r '.hook_event_name // "Stop"')
 
+log() { echo "$(date '+%F %T') claude-code-notify: $*" >>"$HOME/.cache/pane-notify.log"; }
+log "event=$event sid=$session_id pane=${ZELLIJ_PANE_ID:-none}"
+
 # Quiet if the user is already looking at this pane.
 if [ -n "${ZELLIJ_PANE_ID:-}" ] && [ -n "${ZELLIJ_SESSION_NAME:-}" ] &&
   "$HOME/.local/bin/zellij-pane-is-focused" "$ZELLIJ_SESSION_NAME" "terminal_$ZELLIJ_PANE_ID"; then
+  log "suppressed: terminal_$ZELLIJ_PANE_ID in view"
   exit 0
 fi
 
