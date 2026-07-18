@@ -68,7 +68,7 @@ backup_and_link "$DOTFILES_DIR/bin/rexec" "$HOME/.local/bin/rexec"
 backup_and_link "$DOTFILES_DIR/bin/opencode-web-server" "$HOME/.local/bin/opencode-web-server"
 backup_and_link "$DOTFILES_DIR/bin/here-now-publish" "$HOME/.local/bin/here-now-publish"
 backup_and_link "$DOTFILES_DIR/bin/zellij-focus-pane" "$HOME/.local/bin/zellij-focus-pane"
-backup_and_link "$DOTFILES_DIR/bin/claude-code-stop-notify" "$HOME/.local/bin/claude-code-stop-notify"
+backup_and_link "$DOTFILES_DIR/bin/claude-code-notify" "$HOME/.local/bin/claude-code-notify"
 backup_and_link "$DOTFILES_DIR/bin/zellij-pane-is-focused" "$HOME/.local/bin/zellij-pane-is-focused"
 
 mkdir -p "$HOME/Library/LaunchAgents"

@@ -20,7 +20,20 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/brendanduke/.local/bin/claude-code-stop-notify",
+            "command": "/Users/brendanduke/.local/bin/claude-code-notify",
+            "async": true,
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/brendanduke/.local/bin/claude-code-notify",
             "async": true,
             "timeout": 15
           }

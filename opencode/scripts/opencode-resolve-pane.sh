@@ -17,7 +17,7 @@ running_zellij_sessions() {
 }
 
 for zs in $(running_zellij_sessions); do
-  match=$(zellij --session "$zs" action list-panes --json --all 2>/dev/null |
+  match=$(zellij --session "$zs" action list-panes --json -c 2>/dev/null |
     jq -r --arg sid "$session_id" --arg t "$session_title" '
       [ .[] | select(.is_plugin == false) ] as $panes
       | ( [ $panes[] | select(.pane_command // "" | contains($sid)) ]
