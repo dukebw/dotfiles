@@ -1,0 +1,27 @@
+#!/bin/bash
+# Claude Code Stop hook: post a macOS notification when a turn finishes, with
+# click-to-focus of the zellij pane running this Claude Code instance.
+# Receives hook JSON on stdin; zellij coordinates come from this process's
+# environment (the hook runs inside the pane's process tree).
+set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+input=$(cat)
+session_id=$(echo "$input" | jq -r '.session_id // "claude"')
+cwd=$(echo "$input" | jq -r '.cwd // ""')
+
+# Prefer the pane title (Claude Code sets it to the session topic); fall back
+# to the working-directory basename.
+message=$(basename "${cwd:-$PWD}")
+if [ -n "${ZELLIJ_PANE_ID:-}" ] && [ -n "${ZELLIJ_SESSION_NAME:-}" ]; then
+  pane_title=$(zellij --session "$ZELLIJ_SESSION_NAME" action list-panes --json 2>/dev/null |
+    jq -r --argjson id "$ZELLIJ_PANE_ID" \
+      '.[] | select(.is_plugin == false and .id == $id) | .title // empty')
+  [ -n "$pane_title" ] && message="$pane_title"
+fi
+
+args=(-group "claude-$session_id" -title "Claude Code — turn finished" -message "$message" -sound Glass)
+if [ -n "${ZELLIJ_PANE_ID:-}" ] && [ -n "${ZELLIJ_SESSION_NAME:-}" ]; then
+  args+=(-execute "'$HOME/.local/bin/zellij-focus-pane' '$ZELLIJ_SESSION_NAME' 'terminal_$ZELLIJ_PANE_ID'")
+fi
+/opt/homebrew/bin/terminal-notifier "${args[@]}" >/dev/null 2>&1 || true

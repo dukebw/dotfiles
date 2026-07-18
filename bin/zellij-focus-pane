@@ -1,0 +1,42 @@
+#!/bin/bash
+# Focus a zellij pane and raise the iTerm2 window/tab hosting that zellij
+# client (matched by client tty). Safe to run outside any terminal
+# (notification click handlers) — PATH is set explicitly.
+set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+zellij_session="${1:?usage: zellij-focus-pane <zellij_session> <pane_id>}"
+pane_id="${2:?usage: zellij-focus-pane <zellij_session> <pane_id>}"
+
+zellij --session "$zellij_session" action focus-pane-id "$pane_id" 2>/dev/null || true
+
+zellij_clients=$(ps ax -o tty=,command= | grep -E "[z]ellij(\s|$)" |
+  grep -v -- "--server" | grep -v " action ")
+client_tty=$(echo "$zellij_clients" | grep -- "$zellij_session" | awk 'NR==1{print $1}')
+[ -z "$client_tty" ] && client_tty=$(echo "$zellij_clients" | awk 'NR==1{print $1}')
+
+if [ -n "$client_tty" ] && [ "$client_tty" != "??" ]; then
+  osascript - "$client_tty" <<'APPLESCRIPT' || open -a iTerm
+on run argv
+    set targetTty to "/dev/" & item 1 of argv
+    tell application "iTerm2"
+        repeat with w in windows
+            repeat with t in tabs of w
+                repeat with s in sessions of t
+                    if tty of s is targetTty then
+                        select w
+                        select t
+                        select s
+                        activate
+                        return
+                    end if
+                end repeat
+            end repeat
+        end repeat
+        activate
+    end tell
+end run
+APPLESCRIPT
+else
+  open -a iTerm
+fi
