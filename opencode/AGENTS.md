@@ -28,3 +28,7 @@ directories.
 
 Do not push, create remote branches, or open pull requests unless I explicitly
 request that remote operation. Local commits are allowed.
+
+For commits in Baseten repositories, including forks, use the `What`, `How`,
+and `Testing` sections from `~/work/baseten/.github/pull_request_template.md`
+as the commit body. Omit the `Release requirements` section.
