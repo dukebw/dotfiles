@@ -75,6 +75,7 @@ mkdir -p "$HOME/Library/LaunchAgents"
 backup_and_link "$DOTFILES_DIR/launchd/ai.opencode.web.plist" "$HOME/Library/LaunchAgents/ai.opencode.web.plist"
 
 mkdir -p "$HOME/.config/opencode"
+backup_and_link "$DOTFILES_DIR/opencode/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
 backup_and_link "$DOTFILES_DIR/opencode/opencode.json" "$HOME/.config/opencode/opencode.json"
 backup_and_link "$DOTFILES_DIR/opencode/commands" "$HOME/.config/opencode/commands"
 backup_and_link "$DOTFILES_DIR/opencode/plugins" "$HOME/.config/opencode/plugins"
