@@ -17,6 +17,7 @@ opencode_bin="$(command -v opencode)" || {
 }
 readonly opencode_bin
 
+export OPENCODE_DISABLE_FFF=1
 export OPENCODE_SERVER_PASSWORD
 OPENCODE_SERVER_PASSWORD=$(
   /usr/bin/security find-generic-password \

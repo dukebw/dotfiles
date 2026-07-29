@@ -103,6 +103,7 @@ source $ZSH/oh-my-zsh.sh
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 alias k=kubectl
+alias klf='kubectl logs --follow --all-pods=true --all-containers=true --prefix'
 alias gc!='git -c core.commentChar=";" commit --verbose --amend'
 claude-remote() {
   caffeinate -i /Users/brendanduke/.local/bin/claude "$@" --remote-control "Baseten Remote"

@@ -13,30 +13,55 @@ const NOTIFY_SCRIPT = join(
 export const NotifyPlugin: Plugin = async ({ client, $ }) => {
   return {
     event: async ({ event }) => {
-      if (event.type !== "session.idle") {
+      // CLI events can precede the SDK typings pinned in this config.
+      const eventType: string = event.type;
+      const properties = event.properties as {
+        sessionID?: string;
+        questions?: Array<{ question?: string }>;
+      };
+      const notification = (() => {
+        if (eventType === "session.idle") {
+          return {
+            sessionID: properties.sessionID,
+            title: "opencode — turn finished",
+          };
+        }
+        if (
+          eventType === "question.asked" ||
+          eventType === "question.v2.asked"
+        ) {
+          return {
+            sessionID: properties.sessionID,
+            title: "opencode — question",
+            message: properties.questions?.[0]?.question ?? "Input needed",
+          };
+        }
+      })();
+      if (!notification) {
         return;
       }
 
-      const sessionID = (event.properties as { sessionID?: string }).sessionID;
+      const sessionID = notification.sessionID;
       if (!sessionID) {
         return;
       }
 
-      // Subagent sessions also go idle mid-turn; only notify for top-level ones.
+      // Subagent attention events are parent-turn noise.
       const session = await client.session.get({ path: { id: sessionID } });
       if (session.data?.parentID) {
         return;
       }
 
-      const title = session.data?.title ?? "session";
+      const sessionTitle = session.data?.title ?? "session";
+      const message = notification.message ?? sessionTitle;
 
       try {
         // The script owns the notify decision (focus suppression, click
         // action), so it can change without an opencode server restart.
-        await $`${NOTIFY_SCRIPT} ${sessionID} ${title}`;
+        await $`${NOTIFY_SCRIPT} ${sessionID} ${sessionTitle} ${notification.title} ${message}`;
       } catch {
         // Script missing/failed: plain notification, no click action.
-        const script = `display notification "${title.replace(/"/g, '\\"')}" with title "opencode — turn finished" sound name "Glass"`;
+        const script = `display notification "${message.replace(/"/g, '\\"')}" with title "${notification.title}" sound name "Glass"`;
         await $`osascript -e ${script}`;
       }
     },
