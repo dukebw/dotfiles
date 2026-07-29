@@ -22,7 +22,7 @@ from typing import Any
 DEFAULT_RCLI_KUBECONFIG_DIR = Path.home() / ".rcli" / "kubeconfig"
 DEFAULT_GPU_PRODUCT = "NVIDIA-B200"
 DEFAULT_DEBUG_NAMESPACE = "default"
-DEFAULT_FLEET_NAMESPACES = ("baseten", "baseten-devenv")
+DEFAULT_FLEET_NAMESPACES = ("baseten", "baseten-devenv", "dynamo", "mp-devenv")
 
 
 class CommandError(RuntimeError):
@@ -209,6 +209,34 @@ def pod_ready_summary(pod: dict[str, Any]) -> str:
         return "0/0"
     ready = sum(1 for status in statuses if status.get("ready"))
     return f"{ready}/{len(statuses)}"
+
+
+def container_gpu_request(container: dict[str, Any]) -> int:
+    value = container.get("resources", {}).get("requests", {}).get("nvidia.com/gpu", "0")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def gpu_containers(pod: dict[str, Any]) -> list[dict[str, Any]]:
+    result = []
+    for container in pod.get("spec", {}).get("containers", []):
+        gpus = container_gpu_request(container)
+        if gpus > 0:
+            result.append({"name": container.get("name", ""), "gpus": gpus})
+    return result
+
+
+def pod_matches_owner(pod: dict[str, Any], owner: str) -> bool:
+    metadata = pod.get("metadata", {})
+    labels = metadata.get("labels", {})
+    identities = (
+        metadata.get("name", ""),
+        labels.get("baseten.co/model", ""),
+        labels.get("app.kubernetes.io/instance", ""),
+    )
+    return any(owner in identity for identity in identities)
 
 
 def pods_on_node(ctx: dict[str, Any], node: str) -> list[dict[str, str]]:
@@ -572,9 +600,9 @@ def cmd_owner(args: argparse.Namespace) -> None:
 def owned_pods(
     ctx: dict[str, Any],
     namespaces: list[str],
-    owner_prefix: str,
+    owner: str,
     all_phases: bool,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     data = kubectl_json(ctx, ["get", "pods", "--all-namespaces", "-o", "json"])
     namespace_set = set(namespaces)
     rows = []
@@ -582,25 +610,30 @@ def owned_pods(
         metadata = pod.get("metadata", {})
         namespace = metadata.get("namespace", "")
         name = metadata.get("name", "")
-        if namespace not in namespace_set or not name.startswith(owner_prefix):
+        if namespace not in namespace_set or not pod_matches_owner(pod, owner):
             continue
         phase = pod.get("status", {}).get("phase", "")
         if not all_phases and phase != "Running":
             continue
-        rows.append(
-            {
-                "namespace": namespace,
-                "name": name,
-                "node": pod.get("spec", {}).get("nodeName", ""),
-                "phase": phase,
-                "ready": pod_ready_summary(pod),
-            }
-        )
-    return sorted(rows, key=lambda row: (row["namespace"], row["name"]))
+        model = metadata.get("labels", {}).get("baseten.co/model", "")
+        for container in gpu_containers(pod):
+            rows.append(
+                {
+                    "namespace": namespace,
+                    "name": name,
+                    "container": container["name"],
+                    "gpus": container["gpus"],
+                    "model": model,
+                    "node": pod.get("spec", {}).get("nodeName", ""),
+                    "phase": phase,
+                    "ready": pod_ready_summary(pod),
+                }
+            )
+    return sorted(rows, key=lambda row: (row["namespace"], row["name"], row["container"]))
 
 
 def cmd_fleet(args: argparse.Namespace) -> None:
-    """List the pods you own (name-prefix convention) — the fleet.
+    """List the GPU containers you own — the fleet.
 
     Kubernetes is the authority for fleet membership; .rexec*.yaml files are
     sync plumbing and deliberately play no part here (see dotfiles ADR 0001).
@@ -629,8 +662,8 @@ def cmd_fleet(args: argparse.Namespace) -> None:
         return
     for pod in pods:
         print(
-            f"{pod['namespace']}/{pod['name']}\t"
-            f"{pod['phase']}\t{pod['ready']}\t{pod['node']}"
+            f"{pod['namespace']}/{pod['name']}[{pod['container']}]\t"
+            f"{pod['phase']}\t{pod['ready']}\t{pod['gpus']} GPU\t{pod['node']}"
         )
 
 
@@ -717,7 +750,7 @@ def build_parser() -> argparse.ArgumentParser:
     owner.set_defaults(func=cmd_owner)
 
     fleet = subparsers.add_parser("fleet", help="List pods you own (the fleet)")
-    fleet.add_argument("--owner", help="Owner name prefix; defaults to $FLEET_USER then $USER")
+    fleet.add_argument("--owner", help="Owner identity token; defaults to $FLEET_USER then $USER")
     fleet.add_argument("--all-phases", action="store_true", help="Include non-Running pods")
     fleet.set_defaults(func=cmd_fleet)
 

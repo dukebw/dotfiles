@@ -1,8 +1,8 @@
 # gpu-fleet
 
-Summons the **fleet layer**: one floating nvitop pane per GPU dev pod you own,
+Summons the **fleet layer**: one floating GPU monitor per GPU container you own,
 inside the current Zellij session. Multi-node by construction — built for
-working across several pods at once (e.g. disaggregated inference).
+interactive dev pods and managed disaggregated inference deployments.
 
 ```
 C-a F   summon/reconcile the fleet layer
@@ -12,23 +12,24 @@ q       quit one nvitop (its pane closes)
 
 ## How it works
 
-1. `b10-gpu fleet` asks **Kubernetes** which pods you own — pods in the
-   `baseten` and `baseten-devenv` namespaces of the rcli-selected context whose
-   name starts with your user prefix (`$FLEET_USER`, default `$USER`). Local
-   `.rexec*.yaml` files play no part: they are sync plumbing, not an authority
-   (ADR 0001). The `dynamo` namespace is excluded because it contains managed
-   serving workloads rather than interactive dev pods.
-2. Each pane runs `kubectl exec -it <pod> -- uvx --from nvitop nvitop`. No ssh
-   shim, no port-forward: a freshly created pod is monitorable the moment it
-   is Running, and dead tunnels can't take the monitor down.
+1. `b10-gpu fleet` asks **Kubernetes** which GPU containers you own in the
+   `baseten`, `baseten-devenv`, `dynamo`, and `mp-devenv` namespaces of the
+   rcli-selected context. Ownership means `$FLEET_USER` (default `$USER`)
+   appears in the pod name, `baseten.co/model`, or Helm instance label. Only
+   containers with a positive `nvidia.com/gpu` request are included, so managed
+   frontends and routers are excluded. Local `.rexec*.yaml` files play no part:
+   they are sync plumbing, not an authority (ADR 0001).
+2. Each pane runs `kubectl exec -it <pod> -c <gpu-container>`. It uses an
+   installed `nvitop`, otherwise `uvx --from nvitop nvitop`, and finally
+   `nvidia-smi -l 1`. No ssh shim or port-forward is involved, so a newly
+   Running pod is immediately monitorable and dead tunnels cannot break it.
 3. **Reconcile by respawn**: pressing `C-a F` re-queries the fleet. If the
    live panes already match, it just toggles the layer. If the fleet changed,
    all fleet panes are killed and respawned with fresh layout. Pane processes
    are tracked via a `GPU_FLEET_PANE=<namespace>/<pod>` marker in their command
    line.
-4. **Adaptive layout**: 1 pod → full-size; 2–3 → side-by-side columns;
-   more → full-size cascade you cycle through (nvitop needs ~80 columns, so
-   tiling stops at three).
+4. **Adaptive layout**: portrait-first tiling uses at most two columns. Six pods
+   use 2×3, eight use 2×4, and a full 18-pane NVL72 rack uses 2×9.
 
 ## Failure modes
 
@@ -36,11 +37,13 @@ q       quit one nvitop (its pane closes)
   error and the remedy (usually `rcli select`). Re-auth, press `C-a F` again.
 - A pane dies (API stream drop, pod deleted): it closes itself
   (`close-on-exit`); the next `C-a F` reconciles.
+- A GPU image has none of `nvitop`, `uvx`, or `nvidia-smi`: the pane reports
+  the missing monitor and waits for the next reconciliation.
 
 ## Knobs
 
-- `FLEET_USER` — owner prefix if it differs from `$USER`.
+- `FLEET_USER` — owner token if it differs from `$USER`.
 - `b10-gpu fleet [--json|--all-phases|--owner X]` — the underlying query,
   usable standalone.
-- `b10-gpu --namespace <namespace> fleet` — override discovery to one namespace
-  for a one-off query, including `dynamo` when explicitly needed.
+- `b10-gpu --namespace <namespace> fleet` — restrict discovery to one namespace
+  for a one-off query.

@@ -53,10 +53,12 @@ b10-gpu fleet
 b10-gpu --namespace dynamo fleet
 ```
 
-By default, fleet discovery queries both personal dev-pod namespaces:
-`baseten` and `baseten-devenv`. Results include the namespace in each pod name.
-`dynamo` is intentionally excluded because it contains managed serving
-workloads; pass `--namespace dynamo` for an explicit one-off query.
+By default, fleet discovery queries `baseten`, `baseten-devenv`, `dynamo`, and
+`mp-devenv`. It selects Running pods whose name, `baseten.co/model`, or Helm
+instance label contains the owner token, then returns one row per container
+with a positive `nvidia.com/gpu` request. This includes owned managed serving
+workers while excluding their CPU frontends and routers. Results include the
+namespace, GPU container, requested GPU count, readiness, and node.
 
 ### Map GPU Owners
 

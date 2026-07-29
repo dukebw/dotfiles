@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Summon the GPU fleet layer: one floating nvitop pane per owned pod.
+"""Summon the GPU fleet layer: one floating monitor per owned GPU container.
 
 Zellij glue over `b10-gpu fleet` (the Kubernetes-authority fleet query — see
-dotfiles ADR 0001). Each pane runs nvitop on its pod via `kubectl exec`; no
-rexec/ssh plumbing is involved, so a pod is monitorable the moment it is
-Running.
+dotfiles ADR 0001). Each pane runs a GPU monitor in its container via
+`kubectl exec`; no rexec/ssh plumbing is involved, so a pod is monitorable the
+moment it is Running.
 
 Reconcile-by-respawn semantics (bind to a key, e.g. tmux-mode F):
   - fleet unchanged vs live panes -> toggle the floating layer (like `f`)
   - fleet changed                 -> kill all fleet panes, respawn with fresh
                                      adaptive layout
-Adaptive layout: 1 pane full-size, 2-3 side-by-side columns, >3 full-size
-cascade (cycle floating focus to inspect). nvitop needs ~80 columns, so
-tiling stops at 3.
+Adaptive layout: portrait-first grids use at most two columns; a full 18-pane
+NVL72 rack is 2x9.
 
 Runs inside a Zellij session. On failure it prints the remedy and waits for a
 keypress (the launcher pane doubles as the error pane).
@@ -25,6 +24,17 @@ import subprocess
 import sys
 
 MARKER = "GPU_FLEET_PANE"  # embedded in each pane's command line for pgrep
+PANE_VERSION = 5  # bump when existing panes must be respawned
+MONITOR_COMMAND = """if command -v nvitop >/dev/null 2>&1; then
+  exec nvitop
+elif command -v uvx >/dev/null 2>&1; then
+  exec uvx --from nvitop nvitop
+elif command -v nvidia-smi >/dev/null 2>&1; then
+  exec nvidia-smi -l 1
+else
+  echo 'gpu-fleet: container has no nvitop, uvx, or nvidia-smi' >&2
+  exit 127
+fi"""
 
 
 def fail(msg: str) -> None:
@@ -51,7 +61,7 @@ def fleet() -> dict:
 
 
 def pod_key(pod: dict) -> str:
-    return f"{pod['namespace']}/{pod['name']}"
+    return f"v{PANE_VERSION}:{pod['namespace']}/{pod['name']}:{pod['container']}"
 
 
 def live_pane_keys() -> set[str]:
@@ -67,24 +77,48 @@ def live_pane_keys() -> set[str]:
 def geometry(n: int) -> list[dict[str, str]]:
     if n == 1:
         return [dict(x="5%", y="5%", width="90%", height="85%")]
-    if n <= 3:
-        w = {2: 47, 3: 31}[n]
-        step = {2: 49, 3: 33}[n]
-        return [
-            dict(x=f"{2 + i * step}%", y="5%", width=f"{w}%", height="85%")
-            for i in range(n)
-        ]
-    return [  # cascade: full-size, offset; cycle floating focus to inspect
-        dict(x=f"{min(3 * i, 20)}%", y=f"{min(2 * i, 12)}%", width="75%", height="80%")
+    columns = min(n, 2)
+    rows = (n + columns - 1) // columns
+    cell_width = 100 // columns
+    cell_height = 100 // rows
+    return [
+        dict(
+            x=f"{(i % columns) * cell_width}%",
+            y=f"{(i // columns) * cell_height}%",
+            width=f"{cell_width}%",
+            height=f"{cell_height}%",
+        )
         for i in range(n)
     ]
 
 
-def short(pod: str) -> str:
+def short(pod: dict) -> str:
+    name = pod["name"]
+    model = pod.get("model")
+    if model:
+        return model
     # brendanduke-tp8-dev-pod-b200-0 -> tp8; brendanduke-dev-pod-b200-0 -> dev
-    m = re.match(r"[^-]+-(.+?)-?(dev-)?pod", pod)
-    label = m.group(1).rstrip("-") if m else pod
+    m = re.match(r"[^-]+-(.+?)-?(dev-)?pod", name)
+    label = m.group(1).rstrip("-") if m else name
     return label or "dev"
+
+
+def pane_command(data: dict, pod: dict, geo: dict[str, str]) -> list[str]:
+    namespace = pod["namespace"]
+    name = pod["name"]
+    container = pod["container"]
+    node = pod["node"]
+    return [
+        "zellij", "run",
+        "--floating", "--close-on-exit",
+        "--name", f"nvitop@{short(pod)} [{node.split('-')[-1]}]",
+        "-x", geo["x"], "-y", geo["y"],
+        "--width", geo["width"], "--height", geo["height"],
+        "--",
+        "env", f"{MARKER}={pod_key(pod)}", f"KUBECONFIG={data['kubeconfig']}",
+        "kubectl", "exec", "-it", "-n", namespace, name, "-c", container,
+        "--", "sh", "-lc", MONITOR_COMMAND,
+    ]
 
 
 def main() -> None:
@@ -105,20 +139,7 @@ def main() -> None:
     subprocess.run(["pkill", "-f", MARKER], check=False)  # panes close via close-on-exit
 
     for pod, geo in zip(pods, geometry(len(pods))):
-        namespace = pod["namespace"]
-        name = pod["name"]
-        node = pod["node"]
-        cmd = [
-            "zellij", "run",
-            "--floating", "--close-on-exit",
-            "--name", f"nvitop@{short(name)} [{node.split('-')[-1]}]",
-            "-x", geo["x"], "-y", geo["y"],
-            "--width", geo["width"], "--height", geo["height"],
-            "--",
-            "env", f"{MARKER}={pod_key(pod)}", f"KUBECONFIG={data['kubeconfig']}",
-            "kubectl", "exec", "-it", "-n", namespace, name,
-            "--", "uvx", "--from", "nvitop", "nvitop",
-        ]
+        cmd = pane_command(data, pod, geo)
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             fail(f"zellij run failed for {pod_key(pod)}:\n{proc.stderr.strip()}")
