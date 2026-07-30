@@ -70,6 +70,7 @@ backup_and_link "$DOTFILES_DIR/bin/here-now-publish" "$HOME/.local/bin/here-now-
 backup_and_link "$DOTFILES_DIR/bin/zellij-focus-pane" "$HOME/.local/bin/zellij-focus-pane"
 backup_and_link "$DOTFILES_DIR/bin/claude-code-notify" "$HOME/.local/bin/claude-code-notify"
 backup_and_link "$DOTFILES_DIR/bin/zellij-pane-is-focused" "$HOME/.local/bin/zellij-pane-is-focused"
+backup_and_link "$DOTFILES_DIR/bin/klf-pretty" "$HOME/.local/bin/klf-pretty"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 backup_and_link "$DOTFILES_DIR/launchd/ai.opencode.web.plist" "$HOME/Library/LaunchAgents/ai.opencode.web.plist"

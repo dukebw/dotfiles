@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Prettify `kubectl logs --prefix` streams: one line per log record.
+
+Dynamo components emit single-line JSON ({"time"|"timestamp", "level",
+"target"|"logger", "message", ...}); TRT-LLM workers emit bracketed text.
+JSON lines are reformatted to `HH:MM:SS.mmm LVL target message [k=v ...]`;
+everything else passes through unchanged. The `[pod/NAME/container]` prefix
+kubectl adds is compacted to `NAME|` (container kept unless it is "main").
+"""
+
+import json
+import os
+import re
+import sys
+
+PREFIX = re.compile(r"^\[pod/([^/\]]+)/([^\]]+)\] ?")
+# Keys already rendered positionally; anything else is appended as k=v.
+CONSUMED = {"time", "timestamp", "ts", "level", "target", "logger", "message", "msg", "file", "line"}
+COLORS = {"WARN": "\x1b[33m", "WARNING": "\x1b[33m", "ERROR": "\x1b[31m", "FATAL": "\x1b[31m"}
+RESET = "\x1b[0m"
+IS_TTY = sys.stdout.isatty()
+
+
+def format_json_record(raw: str) -> str | None:
+    try:
+        record = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(record, dict) or not (record.keys() & {"message", "msg"}):
+        return None
+    stamp = str(record.get("time") or record.get("timestamp") or record.get("ts") or "")
+    clock = stamp[11:23] if len(stamp) >= 23 and stamp[10] == "T" else stamp
+    level = str(record.get("level") or "?").upper()
+    target = str(record.get("target") or record.get("logger") or "")
+    target = target.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+    extras = " ".join(
+        f"{key}={value}" for key, value in record.items() if key not in CONSUMED
+    )
+    if IS_TTY and level in COLORS:
+        level = f"{COLORS[level]}{level}{RESET}"
+    parts = [clock, level, target, str(record.get("message", record.get("msg")))]
+    if extras:
+        parts.append(extras)
+    return " ".join(part for part in parts if part)
+
+
+def main() -> int:
+    for line in sys.stdin:
+        line = line.rstrip("\n")
+        prefix = ""
+        match = PREFIX.match(line)
+        if match:
+            pod, container = match.groups()
+            prefix = f"{pod}| " if container == "main" else f"{pod}/{container}| "
+            line = line[match.end() :]
+        pretty = format_json_record(line) if line.startswith("{") else None
+        print(f"{prefix}{pretty if pretty is not None else line}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (KeyboardInterrupt, BrokenPipeError):
+        # Point stdout at devnull so interpreter-shutdown flushes don't print
+        # a second BrokenPipeError traceback after e.g. `klf ... | head`.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)
