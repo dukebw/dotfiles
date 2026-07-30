@@ -104,10 +104,11 @@ source $ZSH/oh-my-zsh.sh
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 alias k=kubectl
 alias klf-raw='kubectl logs --follow --all-pods=true --all-containers=true --prefix'
-# Pretty-printed variant with a Kubernetes timestamp on every physical line.
-# Unknown log formats keep their original body (see ~/.local/bin/klf-pretty).
+# Stern owns pod discovery and resilient streams; klf-pretty owns rendering.
 klf() {
-  kubectl logs --follow --all-pods=true --all-containers=true --prefix --timestamps=true "$@" | klf-pretty
+  stern --only-log-lines --color=never --timestamps=default --timezone=UTC \
+    --template '{{printf "[pod/%s/%s] %s\n" .PodName .ContainerName .Message}}' \
+    "$@" | klf-pretty
 }
 alias gc!='git -c core.commentChar=";" commit --verbose --amend'
 claude-remote() {

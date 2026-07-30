@@ -21,6 +21,7 @@ brew "mutagen-io/mutagen/mutagen"
 brew "gh"
 brew "go"
 brew "ty"
+brew "stern"
 
 # Cask apps
 cask "amethyst"
