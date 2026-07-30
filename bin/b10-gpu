@@ -228,6 +228,14 @@ def gpu_containers(pod: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def container_is_running(pod: dict[str, Any], container_name: str) -> bool:
+    return any(
+        status.get("name") == container_name
+        and "running" in status.get("state", {})
+        for status in pod.get("status", {}).get("containerStatuses", [])
+    )
+
+
 def pod_matches_owner(pod: dict[str, Any], owner: str) -> bool:
     metadata = pod.get("metadata", {})
     labels = metadata.get("labels", {})
@@ -617,6 +625,8 @@ def owned_pods(
             continue
         model = metadata.get("labels", {}).get("baseten.co/model", "")
         for container in gpu_containers(pod):
+            if not all_phases and not container_is_running(pod, container["name"]):
+                continue
             rows.append(
                 {
                     "namespace": namespace,

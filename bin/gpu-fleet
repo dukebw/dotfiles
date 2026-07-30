@@ -3,8 +3,8 @@
 
 Zellij glue over `b10-gpu fleet` (the Kubernetes-authority fleet query — see
 dotfiles ADR 0001). Each pane runs a GPU monitor in its container via
-`kubectl exec`; no rexec/ssh plumbing is involved, so a pod is monitorable the
-moment it is Running.
+`kubectl exec`; no rexec/ssh plumbing is involved, so a GPU container is
+monitorable the moment it is running.
 
 Reconcile-by-respawn semantics (bind to a key, e.g. tmux-mode F):
   - fleet unchanged vs live panes -> toggle the floating layer (like `f`)
@@ -128,7 +128,7 @@ def main() -> None:
     pods = data["pods"]
     if not pods:
         fail(
-            f"no Running pods owned by {data['owner']!r} in "
+            f"no running GPU containers owned by {data['owner']!r} in "
             f"{', '.join(data['namespaces'])}"
         )
 

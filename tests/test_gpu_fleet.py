@@ -31,8 +31,12 @@ def pod(
     *,
     model: str = "",
     phase: str = "Running",
+    container_states: dict[str, str] | None = None,
+    container_readiness: dict[str, bool] | None = None,
 ) -> dict:
     labels = {"baseten.co/model": model} if model else {}
+    container_states = container_states or {}
+    container_readiness = container_readiness or {}
     return {
         "metadata": {"namespace": namespace, "name": name, "labels": labels},
         "spec": {
@@ -48,7 +52,21 @@ def pod(
         "status": {
             "phase": phase,
             "containerStatuses": [
-                {"name": container_name, "ready": phase == "Running"}
+                {
+                    "name": container_name,
+                    "ready": container_readiness.get(
+                        container_name,
+                        phase == "Running"
+                        and container_states.get(container_name, "running")
+                        == "running",
+                    ),
+                    "state": {
+                        container_states.get(
+                            container_name,
+                            "running" if phase == "Running" else "terminated",
+                        ): {}
+                    },
+                }
                 for container_name, _ in containers
             ],
         },
@@ -144,6 +162,30 @@ class B10GPUFleetTests(unittest.TestCase):
             [(row["container"], row["gpus"]) for row in result],
             [("worker-a", 2), ("worker-b", 2)],
         )
+
+    def test_only_running_gpu_containers_are_monitorable(self) -> None:
+        fixtures = [
+            pod(
+                "dynamo",
+                "brendanduke-crashloop",
+                [("main", 4)],
+                container_states={"main": "waiting"},
+            ),
+            pod(
+                "dynamo",
+                "brendanduke-starting",
+                [("main", 4)],
+                container_readiness={"main": False},
+            ),
+        ]
+        with mock.patch.object(
+            B10_GPU, "kubectl_json", return_value={"items": fixtures}
+        ):
+            result = B10_GPU.owned_pods(
+                {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
+            )
+
+        self.assertEqual([row["name"] for row in result], ["brendanduke-starting"])
 
 
 class GPUFleetLauncherTests(unittest.TestCase):
