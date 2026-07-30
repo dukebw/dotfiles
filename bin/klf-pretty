@@ -1,60 +1,306 @@
 #!/usr/bin/env python3
-"""Prettify `kubectl logs --prefix` streams: one line per log record.
+"""Render prefixed Kubernetes log streams as compact, aligned records.
 
-Dynamo components emit single-line JSON ({"time"|"timestamp", "level",
-"target"|"logger", "message", ...}); TRT-LLM workers emit bracketed text.
-JSON lines are reformatted to `HH:MM:SS.mmm LVL target message [k=v ...]`;
-everything else passes through unchanged. The `[pod/NAME/container]` prefix
-kubectl adds is compacted to `NAME|` (container kept unless it is "main").
+The Kubernetes pod/container prefix and optional RFC3339 timestamp form an
+engine-neutral envelope. Format adapters may populate structured fields; an
+unrecognized body remains untouched. The renderer handles both through one
+record model, so adding another log format does not change presentation.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import os
 import re
 import sys
+import zlib
 
-PREFIX = re.compile(r"^\[pod/([^/\]]+)/([^\]]+)\] ?")
-# Keys already rendered positionally; anything else is appended as k=v.
-CONSUMED = {"time", "timestamp", "ts", "level", "target", "logger", "message", "msg", "file", "line"}
-COLORS = {"WARN": "\x1b[33m", "WARNING": "\x1b[33m", "ERROR": "\x1b[31m", "FATAL": "\x1b[31m"}
+
+KUBERNETES_PREFIX = re.compile(r"^\[pod/([^/\]]+)/([^\]]+)\] ?")
+RFC3339_PREFIX = re.compile(
+    r"^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})) (?P<body>.*)$"
+)
+DEPLOYMENT_POD = re.compile(
+    r"^(?P<base>.+)-(?P<revision>[a-z0-9]{8,10})-"
+    r"(?P<instance>[a-z0-9]{5})$"
+)
+CONTROLLER_HASH = re.compile(r"^(?=.*\d)[a-z0-9]{8,10}$")
+SIMPLE_VALUE = re.compile(r"^[A-Za-z0-9_./:@%+,-]+$")
+
+POSITIONAL_KEYS = {
+    "time",
+    "timestamp",
+    "ts",
+    "level",
+    "target",
+    "logger",
+    "message",
+    "msg",
+    "file",
+    "line",
+}
+LEVEL_ALIASES = {
+    "WARNING": "WARN",
+    "ERR": "ERROR",
+    "CRITICAL": "FATAL",
+}
+LEVEL_COLORS = {
+    "TRACE": "\x1b[2m",
+    "DEBUG": "\x1b[36m",
+    "WARN": "\x1b[1;33m",
+    "ERROR": "\x1b[1;31m",
+    "FATAL": "\x1b[1;31m",
+}
+SOURCE_COLORS = (33, 39, 45, 69, 75, 81, 111, 141, 147, 177, 207, 213)
 RESET = "\x1b[0m"
-IS_TTY = sys.stdout.isatty()
+DIM = "\x1b[2m"
 
 
-def format_json_record(raw: str) -> str | None:
+@dataclass(frozen=True)
+class LogSource:
+    pod: str
+    container: str
+
+    @property
+    def identity(self) -> str:
+        return f"{self.pod}/{self.container}"
+
+
+@dataclass(frozen=True)
+class LogEnvelope:
+    source: LogSource | None
+    timestamp: str | None
+    body: str
+
+
+@dataclass(frozen=True)
+class LogRecord:
+    source: LogSource | None
+    timestamp: str | None
+    level: str | None
+    logger: str | None
+    message: str
+    fields: tuple[tuple[str, object], ...]
+    location: str | None
+    raw: str
+
+
+def parse_envelope(line: str) -> LogEnvelope:
+    source = None
+    prefix = KUBERNETES_PREFIX.match(line)
+    if prefix:
+        source = LogSource(*prefix.groups())
+        line = line[prefix.end() :]
+
+    timestamp = None
+    timestamp_prefix = RFC3339_PREFIX.match(line)
+    if timestamp_prefix:
+        timestamp = timestamp_prefix.group("timestamp")
+        line = timestamp_prefix.group("body")
+
+    return LogEnvelope(source=source, timestamp=timestamp, body=line)
+
+
+def normalize_level(value: object | None) -> str | None:
+    if value is None:
+        return None
+    level = str(value).upper()
+    return LEVEL_ALIASES.get(level, level)
+
+
+def json_message(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def parse_json_record(envelope: LogEnvelope, raw: str) -> LogRecord | None:
+    body = envelope.body.lstrip()
+    if not body.startswith("{"):
+        return None
     try:
-        record = json.loads(raw)
+        value = json.loads(body)
     except (json.JSONDecodeError, ValueError):
         return None
-    if not isinstance(record, dict) or not (record.keys() & {"message", "msg"}):
+    if not isinstance(value, dict) or not (value.keys() & {"message", "msg"}):
         return None
-    stamp = str(record.get("time") or record.get("timestamp") or record.get("ts") or "")
-    clock = stamp[11:23] if len(stamp) >= 23 and stamp[10] == "T" else stamp
-    level = str(record.get("level") or "?").upper()
-    target = str(record.get("target") or record.get("logger") or "")
-    target = target.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
-    extras = " ".join(
-        f"{key}={value}" for key, value in record.items() if key not in CONSUMED
+
+    message_key = "message" if "message" in value else "msg"
+    timestamp = envelope.timestamp or next(
+        (str(value[key]) for key in ("time", "timestamp", "ts") if value.get(key)),
+        None,
     )
-    if IS_TTY and level in COLORS:
-        level = f"{COLORS[level]}{level}{RESET}"
-    parts = [clock, level, target, str(record.get("message", record.get("msg")))]
-    if extras:
-        parts.append(extras)
-    return " ".join(part for part in parts if part)
+    logger_value = value.get("target") or value.get("logger")
+    logger = str(logger_value) if logger_value is not None else None
+    file = value.get("file")
+    line = value.get("line")
+    location = None
+    if file is not None:
+        location = str(file) if line is None else f"{file}:{line}"
+
+    return LogRecord(
+        source=envelope.source,
+        timestamp=timestamp,
+        level=normalize_level(value.get("level")),
+        logger=logger,
+        message=json_message(value[message_key]),
+        fields=tuple(
+            (str(key), field_value)
+            for key, field_value in value.items()
+            if key not in POSITIONAL_KEYS
+        ),
+        location=location,
+        raw=raw,
+    )
+
+
+PARSERS = (parse_json_record,)
+
+
+def parse_record(line: str) -> LogRecord:
+    envelope = parse_envelope(line)
+    for parser in PARSERS:
+        record = parser(envelope, line)
+        if record is not None:
+            return record
+    return LogRecord(
+        source=envelope.source,
+        timestamp=envelope.timestamp,
+        level=None,
+        logger=None,
+        message=envelope.body,
+        fields=(),
+        location=None,
+        raw=line,
+    )
+
+
+def compact(value: str, width: int) -> str:
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return value[:width]
+    left = (width - 3) // 2
+    right = width - 3 - left
+    return f"{value[:left]}...{value[-right:]}"
+
+
+def compact_pod(pod: str, width: int) -> str:
+    match = DEPLOYMENT_POD.match(pod)
+    if not match:
+        return compact(pod, width)
+
+    base = match.group("base")
+    while "-" in base and CONTROLLER_HASH.fullmatch(base.rsplit("-", 1)[-1]):
+        base = base.rsplit("-", 1)[0]
+    semantic_parts = [part for part in base.split("-") if part][-2:]
+    workload = "-".join(semantic_parts) or base
+    instance = match.group("instance")
+    return compact(f"{workload}/{instance}", width)
+
+
+def source_label(source: LogSource | None, width: int) -> str:
+    if source is None:
+        return ""
+    if source.container == "main":
+        return compact_pod(source.pod, width)
+    container = compact(source.container, width - 2)
+    if len(container) + 1 >= width:
+        return compact(container, width)
+    pod_width = width - len(container) - 1
+    if DEPLOYMENT_POD.match(source.pod):
+        pod = compact_pod(source.pod, pod_width)
+    else:
+        pod_parts = [part for part in source.pod.split("-") if part]
+        pod = compact("-".join(pod_parts[-2:]), pod_width)
+    return f"{pod}:{container}"
+
+
+def logger_label(logger: str | None, width: int) -> str:
+    if not logger:
+        return ""
+    leaf = re.split(r"::|\.", logger)[-1]
+    return compact(leaf, width)
+
+
+def display_clock(timestamp: str | None) -> str:
+    if not timestamp:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return compact(timestamp, 12)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc)
+    return f"{parsed:%H:%M:%S}.{parsed.microsecond // 1000:03d}"
+
+
+def field_value(value: object) -> str:
+    if isinstance(value, str) and value and SIMPLE_VALUE.fullmatch(value):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+class Renderer:
+    CLOCK_WIDTH = 12
+    LEVEL_WIDTH = 5
+    SOURCE_WIDTH = 24
+    LOGGER_WIDTH = 18
+
+    def __init__(self, color: bool | None = None) -> None:
+        self.color = (
+            sys.stdout.isatty() and "NO_COLOR" not in os.environ
+            if color is None
+            else color
+        )
+
+    def style(self, value: str, code: str) -> str:
+        return (
+            f"{code}{value}{RESET}"
+            if self.color and code and value.strip()
+            else value
+        )
+
+    def render_fields(self, fields: tuple[tuple[str, object], ...]) -> str:
+        rendered = []
+        for key, value in fields:
+            rendered_key = self.style(key, DIM)
+            rendered.append(f"{rendered_key}={field_value(value)}")
+        return " ".join(rendered)
+
+    def render(self, record: LogRecord) -> str:
+        clock = f"{display_clock(record.timestamp):<{self.CLOCK_WIDTH}}"
+        level = f"{(record.level or ''):<{self.LEVEL_WIDTH}}"
+        source = source_label(record.source, self.SOURCE_WIDTH)
+        source_cell = f"{source:<{self.SOURCE_WIDTH}}"
+        logger = logger_label(record.logger, self.LOGGER_WIDTH)
+        logger_cell = f"{logger:<{self.LOGGER_WIDTH}}"
+
+        clock = self.style(clock, DIM)
+        level = self.style(level, LEVEL_COLORS.get(record.level or "", ""))
+        if self.color and source:
+            color_index = zlib.crc32(record.source.identity.encode()) % len(
+                SOURCE_COLORS
+            )
+            source_cell = self.style(
+                source_cell, f"\x1b[38;5;{SOURCE_COLORS[color_index]}m"
+            )
+        logger_cell = self.style(logger_cell, DIM)
+
+        message = record.message.replace("\r", "\\r").replace("\n", "\\n")
+        fields = self.render_fields(record.fields)
+        content = f"{message} {fields}" if fields else message
+        prefix = f"{clock} {level} {source_cell} {logger_cell}"
+        return f"{prefix} {content}" if content else prefix.rstrip()
 
 
 def main() -> int:
+    renderer = Renderer()
     for line in sys.stdin:
-        line = line.rstrip("\n")
-        prefix = ""
-        match = PREFIX.match(line)
-        if match:
-            pod, container = match.groups()
-            prefix = f"{pod}| " if container == "main" else f"{pod}/{container}| "
-            line = line[match.end() :]
-        pretty = format_json_record(line) if line.startswith("{") else None
-        print(f"{prefix}{pretty if pretty is not None else line}", flush=True)
+        print(renderer.render(parse_record(line.rstrip("\n"))), flush=True)
     return 0
 
 
@@ -62,7 +308,6 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (KeyboardInterrupt, BrokenPipeError):
-        # Point stdout at devnull so interpreter-shutdown flushes don't print
-        # a second BrokenPipeError traceback after e.g. `klf ... | head`.
+        # Avoid a second BrokenPipeError while Python flushes during shutdown.
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         sys.exit(0)

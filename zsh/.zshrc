@@ -104,10 +104,10 @@ source $ZSH/oh-my-zsh.sh
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 alias k=kubectl
 alias klf-raw='kubectl logs --follow --all-pods=true --all-containers=true --prefix'
-# Pretty-printed variant: JSON log lines -> "time LVL target message k=v",
-# TRT-LLM/text lines pass through; pod prefix compacted (see ~/.local/bin/klf-pretty).
+# Pretty-printed variant with a Kubernetes timestamp on every physical line.
+# Unknown log formats keep their original body (see ~/.local/bin/klf-pretty).
 klf() {
-  kubectl logs --follow --all-pods=true --all-containers=true --prefix "$@" | klf-pretty
+  kubectl logs --follow --all-pods=true --all-containers=true --prefix --timestamps=true "$@" | klf-pretty
 }
 alias gc!='git -c core.commentChar=";" commit --verbose --amend'
 claude-remote() {
