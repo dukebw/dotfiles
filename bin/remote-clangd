@@ -11,9 +11,12 @@ cuda_path="/usr/local/cuda"
 compile_commands_dir=""
 generate_fallback_compile_commands=0
 container=""
+cmake_source_dir=""
+cmake_args=()
+cmake_env=()
 
 usage() {
-  printf 'usage: remote-clangd --local-root PATH --remote-root PATH --ssh-alias ALIAS [--compile-commands-dir PATH] [--container NAME] [options]\n' >&2
+  printf 'usage: remote-clangd --local-root PATH --remote-root PATH --ssh-alias ALIAS [--compile-commands-dir PATH] [--cmake-source-dir PATH] [--cmake-arg ARG] [--cmake-env KEY=VALUE] [--container NAME] [options]\n' >&2
   exit 2
 }
 
@@ -27,6 +30,9 @@ while [[ $# -gt 0 ]]; do
     --cuda-arch) cuda_arch="${2:-}"; shift 2 ;;
     --cuda-path) cuda_path="${2:-}"; shift 2 ;;
     --compile-commands-dir) compile_commands_dir="${2:-}"; shift 2 ;;
+    --cmake-source-dir) cmake_source_dir="${2:-}"; shift 2 ;;
+    --cmake-arg) cmake_args+=("${2:-}"); shift 2 ;;
+    --cmake-env) cmake_env+=("${2:-}"); shift 2 ;;
     --container) container="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
@@ -34,10 +40,12 @@ done
 
 [[ -n "$local_root" && -n "$remote_root" && -n "$ssh_alias" ]] || usage
 
+cache_key="$(printf '%s' "$remote_root" | shasum | cut -d' ' -f1)"
 if [[ -z "$compile_commands_dir" ]]; then
-  cache_key="$(printf '%s' "$remote_root" | shasum | cut -d' ' -f1)"
   compile_commands_dir="/tmp/remote-clangd/$cache_key"
-  generate_fallback_compile_commands=1
+  if [[ -z "$cmake_source_dir" ]]; then
+    generate_fallback_compile_commands=1
+  fi
 fi
 
 if [[ -n "$container" && "$generate_fallback_compile_commands" == 1 ]]; then
@@ -45,13 +53,94 @@ if [[ -n "$container" && "$generate_fallback_compile_commands" == 1 ]]; then
   exit 2
 fi
 
+if [[ -n "$container" && -n "$cmake_source_dir" ]]; then
+  printf 'remote-clangd: CMake configuration inside --container is not supported\n' >&2
+  exit 2
+fi
+
 quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\''/g")"
 }
 
+cmake_command=""
+cmake_fingerprint=""
+if [[ -n "$cmake_source_dir" ]]; then
+  local_cmake_source_dir="$cmake_source_dir"
+  remote_cmake_source_dir="$cmake_source_dir"
+  if [[ "$cmake_source_dir" != /* ]]; then
+    local_cmake_source_dir="$local_root/$cmake_source_dir"
+    remote_cmake_source_dir="$remote_root/$cmake_source_dir"
+  elif [[ "$cmake_source_dir" == "$remote_root"/* ]]; then
+    local_cmake_source_dir="$local_root${cmake_source_dir#"$remote_root"}"
+  else
+    printf 'remote-clangd: absolute CMake source must be under the remote root: %s\n' "$cmake_source_dir" >&2
+    exit 2
+  fi
+
+  cmake_command="env"
+  for assignment in "${cmake_env[@]}"; do
+    if [[ ! "$assignment" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      printf 'remote-clangd: invalid CMake environment assignment: %s\n' "$assignment" >&2
+      exit 2
+    fi
+    cmake_command+=" $(quote "$assignment")"
+  done
+  cmake_command+=" cmake -S $(quote "$remote_cmake_source_dir") -B $(quote "$compile_commands_dir")"
+  for arg in "${cmake_args[@]}"; do
+    cmake_command+=" $(quote "$arg")"
+  done
+
+  cmake_fingerprint="$(python3 - "$local_cmake_source_dir" "$cmake_command" <<'PY'
+import hashlib
+import os
+import sys
+
+root, seed = sys.argv[1:]
+digest = hashlib.sha256(seed.encode())
+source_extensions = {'.c', '.cc', '.cpp', '.cu', '.cuh', '.cxx', '.h', '.hh', '.hpp', '.hxx'}
+skip_dirs = {'.cache', '.git', '.mypy_cache', '.pytest_cache', '.ruff_cache', '.venv', '__pycache__'}
+
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = sorted(
+        name for name in dirnames
+        if name not in skip_dirs and name != 'build' and not name.startswith('build_')
+    )
+    for filename in sorted(filenames):
+        path = os.path.join(dirpath, filename)
+        relative_path = os.path.relpath(path, root)
+        extension = os.path.splitext(filename)[1].lower()
+        if filename == 'CMakeLists.txt' or extension == '.cmake':
+            digest.update(relative_path.encode())
+            with open(path, 'rb') as source:
+                digest.update(source.read())
+        elif extension in source_extensions:
+            digest.update(relative_path.encode())
+
+print(digest.hexdigest())
+PY
+)"
+fi
+
 remote_cmd="set -euo pipefail
 cd $(quote "$remote_root")
-if [[ $(quote "$generate_fallback_compile_commands") == 1 || ! -f $(quote "$compile_commands_dir/compile_commands.json") ]]; then
+if [[ -n $(quote "$cmake_source_dir") ]]; then
+  mkdir -p $(quote "$compile_commands_dir")
+  exec 9>$(quote "$compile_commands_dir/.remote-clangd-configure.lock")
+  flock 9
+  previous_fingerprint=''
+  if [[ -f $(quote "$compile_commands_dir/.remote-clangd-cmake-fingerprint") ]]; then
+    previous_fingerprint=\$(<$(quote "$compile_commands_dir/.remote-clangd-cmake-fingerprint"))
+  fi
+  if [[ ! -f $(quote "$compile_commands_dir/compile_commands.json") || \"\$previous_fingerprint\" != $(quote "$cmake_fingerprint") ]]; then
+    printf 'remote-clangd: configuring CMake compilation database: %s\n' $(quote "$compile_commands_dir/compile_commands.json") >&2
+    $cmake_command >&2
+    if [[ ! -f $(quote "$compile_commands_dir/compile_commands.json") ]]; then
+      printf 'remote-clangd: CMake did not produce a compilation database: %s\n' $(quote "$compile_commands_dir/compile_commands.json") >&2
+      exit 1
+    fi
+    printf '%s\n' $(quote "$cmake_fingerprint") >$(quote "$compile_commands_dir/.remote-clangd-cmake-fingerprint")
+  fi
+elif [[ $(quote "$generate_fallback_compile_commands") == 1 || ! -f $(quote "$compile_commands_dir/compile_commands.json") ]]; then
   if [[ $(quote "$generate_fallback_compile_commands") == 0 ]]; then
     printf 'remote-clangd: compilation database not found; generating fallback: %s\n' $(quote "$compile_commands_dir/compile_commands.json") >&2
   fi

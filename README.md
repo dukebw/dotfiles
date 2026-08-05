@@ -46,12 +46,12 @@ cd ~/dotfiles && ./install.sh
 - `ssh/config.template` - X11 forwarding for Coder
 
 ### Remote Helpers
-- `bin/rexec` - run commands in a configured Kubernetes GPU dev pod over an SSH shim
+- `bin/rexec` - run commands in a configured Kubernetes pod over an SSH shim
 - `bin/r` - flush local changes with Mutagen, run remote command, and capture local logs
 - `bin/rlog` - run remote command and mirror logs from `/home/ubuntu/shared/logs`
 - `bin/b10-gpu` - inspect Vultr B200 dev nodes, map GPU owners, and move the configured `rexec` pod
 - `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
-- `bin/remote-clangd` - stdio bridge from local Neovim to remote `clangd-21` on the B200 pod
+- `bin/remote-clangd` - stdio bridge to pod-hosted `clangd-18` with per-worktree CMake databases
 - `bin/check-remote-clangd-nvim` - headless verification for remote CUDA diagnostics in Neovim
 - `bin/opencode-web-server` - Keychain-authenticated OpenCode web server for Tailscale Serve
 - `bin/here-now-publish` - publish and version internal artifacts through here-now
@@ -69,14 +69,14 @@ architecture, secure installation, daily workflow, and troubleshooting.
 
 ## Kubernetes Pod Remote Execution
 
-The main remote loop is local editing plus remote execution in a GPU dev pod:
+The main remote loop is local editing plus remote execution in a Kubernetes pod:
 
 ```text
 Local editor/Git/kubeconfig
   |
   | Mutagen one-way sync over SSH
   v
-Kubernetes GPU pod workdir
+Kubernetes pod workdir
   |
   | command runs through ssh -> kubectl port-forward -> pod sshd
   v
@@ -102,9 +102,10 @@ registry default. Tooling can provide both `REXEC_LOCAL_ROOT` and
 [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md) for architecture
 diagrams, setup, security model, config shape, and troubleshooting.
 
-For CUDA editing, Neovim can route matching local `*.cu` buffers to remote
-`clangd-21` in the same B200 pod. See [`docs/remote-clangd.md`](docs/remote-clangd.md)
-for flow diagrams, reconnect behavior, and headless verification commands.
+For CUDA editing, Neovim routes matching buffers to `clangd-18` in a dedicated
+CPU-only Vultr pod built from the pinned TRT-LLM CUDA image. See
+[`docs/remote-clangd.md`](docs/remote-clangd.md) for flow diagrams, reconnect
+behavior, and headless verification commands.
 
 ## Baseten GPU Dev Helpers
 

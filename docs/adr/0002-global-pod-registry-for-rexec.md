@@ -6,7 +6,9 @@ pod (pod key → Kubernetes pod name, ssh alias, tunnel port, cluster defaults),
 and a per-worktree `.rexec.yaml` declaring only how that tree syncs
 (`remote_workdir`, `ignore`). Selection is `-p/--pod <key>` >
 `$REXEC_POD` > the registry's `default:`; mutagen sessions are always derived
-as `<worktree-dirname>-<podkey>` and auto-created on first flush.
+as `<root-basename>-<8-char-root-hash>-<podkey>` and auto-created on first
+flush. The full-root hash distinguishes nested repositories with the same
+basename across worktrees.
 
 The forcing observation: pod facts were duplicated per worktree (two worktrees
 × two pods = four files differing in exactly four keys), and the facts that
@@ -28,7 +30,8 @@ name override" to "registry key" (grep showed zero usage of the old meaning
 outside rexec's own docs); legacy worktree configs containing pod keys
 hard-error with migration instructions rather than being honored (no
 dual-schema code path); existing ad-hoc mutagen session names were terminated
-and recreated under derived names (a rescan, not a retransfer).
+and recreated under collision-resistant derived names (a rescan, not a
+retransfer).
 
 ## Considered Options
 

@@ -1,7 +1,7 @@
 # rexec Kubernetes Pod Workflow
 
-`rexec` runs commands in a Kubernetes GPU dev pod while keeping editing, Git,
-SSH private keys, GitHub credentials, and kubeconfig on the local laptop.
+`rexec` runs commands in Kubernetes dev and tooling pods while keeping editing,
+Git, SSH private keys, GitHub credentials, and kubeconfig on the local laptop.
 
 The workflow is optimized for this loop:
 
@@ -23,9 +23,9 @@ Local files are authoritative. The pod is disposable compute.
                 +---------------------------+
                 |                           |
 +---------------v---------------+     +-----v---------------------------+
-| Local MacBook                 |     | Kubernetes GPU dev pod          |
+| Local MacBook                 |     | Kubernetes dev/tooling pod      |
 |                               |     |                                 |
-| Editor, Git, GitHub auth      |     | Docker, GPUs, build/test tools   |
+| Editor, Git, GitHub auth      |     | Compiler/build/test tools        |
 | kubeconfig                    |     | sshd on localhost-only tunnel    |
 | SSH private key               |     | authorized_keys has public key   |
 | Mutagen daemon                |     | synced working tree              |
@@ -68,7 +68,7 @@ The pod must not contain long-lived credentials.
 What stays local:
 
 - SSH private key: `~/.config/rexec/pod_ed25519`
-- kubeconfig: configured by `.rexec.yaml` or `~/.config/rexec/config.yaml`
+- kubeconfig: configured by `~/.config/rexec/pods.yaml`
 - GitHub credentials and `gh auth`
 - Git working tree metadata, including `.git`
 
@@ -92,7 +92,7 @@ local `kubectl port-forward` process owned by the laptop session.
 | Worktree sync config | `.rexec.yaml` at the worktree root | How this tree syncs (`remote_workdir`, `ignore`). Pod-agnostic and untracked. |
 | State | `~/.config/rexec/` | SSH key, per-pod port-forward PID/log (`port-forward-<key>.*`), run logs. |
 | SSH aliases | `~/.ssh/config` | One managed block containing a Host entry for every registry pod. |
-| Mutagen sessions | `mutagen sync list` | One-way local-to-pod sync, one session per (worktree, pod key), named `<worktree-dirname>-<podkey>`. |
+| Mutagen sessions | `mutagen sync list` | One-way local-to-pod sync, one session per (worktree, pod key); new sessions are named `<root-basename>-<8-char-root-hash>-<podkey>`. |
 
 ## Required Local Tools
 
@@ -114,8 +114,9 @@ The dev pod must support:
 - root or enough permissions to write `/root/.ssh/authorized_keys`
 - a stable filesystem path for the remote workdir, usually under `/workspace`
 
-The current Baseten GPU dev pod runbooks create privileged pods that satisfy
-these requirements.
+GPU dev pods satisfy these requirements through the existing runbooks. The
+CPU-only remote clangd pod is defined in
+`kubernetes/remote-clangd-statefulset.yaml`.
 
 ## Configuration
 
@@ -140,6 +141,10 @@ pods:
     pod: brendanduke-dev-pod-b200-0
     ssh_alias: baseten-dev-pod
     ssh_local_port: 22222
+  clangd:
+    pod: remote-clangd-debugging-brendanduke-0
+    ssh_alias: baseten-remote-clangd-pod
+    ssh_local_port: 22230
   21ca:
     pod: brendanduke-tp8-dev-pod-b200-0
     ssh_alias: baseten-tp8-pod
@@ -148,9 +153,9 @@ pods:
     # (e.g. a pod on a different cluster).
 ```
 
-Pod keys (`e7e4`, `21ca`) are free-form handles; by convention they echo the
-node while pods run one-per-node. Registry loading validates unique ports and
-unique aliases and fails loud on conflicts.
+Pod keys (`e7e4`, `clangd`, `21ca`) are free-form handles. GPU pod keys may echo
+their node; purpose-specific tooling pods use descriptive keys. Registry loading
+validates unique ports and unique aliases and fails loud on conflicts.
 
 Worktree sync config:
 
@@ -244,11 +249,17 @@ Setup performs these actions:
 7. Start kubectl port-forward localhost:<ssh_local_port> -> pod:<ssh_remote_port>
    (state in ~/.config/rexec/port-forward-<key>.{pid,log}, one pair per pod)
 8. Create the remote workdir
-9. Create the Mutagen one-way-replica session <worktree-dirname>-<podkey>
+9. Create the Mutagen one-way-replica session <root-basename>-<8-char-root-hash>-<podkey>
 ```
 
 Sessions also auto-create lazily: the first `r -p <key> ...` in a worktree
 creates that (worktree, pod) session on the spot.
+
+If a pre-hash `<root-basename>-<podkey>` session already points at the exact
+local and remote roots, rexec reuses it. A legacy session pointing at another
+same-named nested repository is not reused; rexec creates the hashed session,
+which prevents worktrees containing repeated names such as `trt-llm` from
+colliding.
 
 The managed SSH block holds one Host entry per registry pod:
 
@@ -393,11 +404,11 @@ Force a flush without running a command:
 mutagen sync flush <mutagen_session>
 ```
 
-Recreate a session after changing ignore rules (names are derived as
-`<worktree-dirname>-<podkey>`):
+Recreate a session after changing ignore rules. Get the collision-resistant
+derived name from `mutagen sync list`:
 
 ```bash
-mutagen sync terminate baseten-dspark-21ca
+mutagen sync terminate baseten-dspark-1a2b3c4d-21ca
 rexec --setup -p 21ca
 ```
 

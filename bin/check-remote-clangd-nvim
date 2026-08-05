@@ -78,8 +78,28 @@ if probe_tunnel_recovery then
   vim.wait(6000, function()
     return false
   end, 100)
-  local pgrep_result = vim.system({ "pgrep", "-f", "kubectl.*port-forward.*22222:2222" }, { text = true }):wait()
-  local tunnel_pid = pgrep_result.stdout and pgrep_result.stdout:match "%d+"
+  local cmd = original_client.config.cmd or {}
+  local ssh_alias
+  for i, arg in ipairs(cmd) do
+    if arg == "--ssh-alias" then
+      ssh_alias = cmd[i + 1]
+      break
+    end
+  end
+  if not ssh_alias then
+    fail "remote clangd command has no SSH alias"
+  end
+  local ssh_config = vim.system({ "ssh", "-G", ssh_alias }, { text = true }):wait()
+  local ssh_port = ssh_config.stdout
+    and (ssh_config.stdout:match "^port%s+(%d+)" or ssh_config.stdout:match "\nport%s+(%d+)")
+  if not ssh_port then
+    fail "could not resolve remote clangd SSH port"
+  end
+  local lsof_result = vim.system(
+    { "lsof", "-nP", "-iTCP:" .. ssh_port, "-sTCP:LISTEN", "-t" },
+    { text = true }
+  ):wait()
+  local tunnel_pid = lsof_result.stdout and lsof_result.stdout:match "%d+"
   if not tunnel_pid then
     fail "could not find rexec port-forward process"
   end

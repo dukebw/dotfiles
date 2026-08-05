@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: remote-clangd-debugging-brendanduke
+  namespace: baseten
+  labels:
+    app.kubernetes.io/name: remote-clangd
+    app.kubernetes.io/instance: remote-clangd-debugging-brendanduke
+spec:
+  serviceName: remote-clangd-debugging-brendanduke
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: remote-clangd-debugging-brendanduke
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: remote-clangd
+        app.kubernetes.io/instance: remote-clangd-debugging-brendanduke
+    spec:
+      nodeSelector:
+        vke.vultr.com/node-pool: vultr-us-sea-prod-1-essential
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: remote-clangd
+          image: baseten/tensorrt_llm-release:fc475cef59
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+            - |
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends clangd-18 openssh-server
+              rm -rf /var/lib/apt/lists/*
+              mkdir -p /run/sshd /workspace
+              exec sleep infinity
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -lc
+                - command -v clangd-18 >/dev/null && command -v sshd >/dev/null
+            periodSeconds: 5
+            failureThreshold: 120
+          resources:
+            requests:
+              cpu: "2"
+              memory: 8Gi
+              ephemeral-storage: 20Gi
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              ephemeral-storage: 100Gi
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 100Gi

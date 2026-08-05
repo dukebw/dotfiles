@@ -1,13 +1,13 @@
 # Remote clangd for CUDA
 
 This documents the personal Neovim workflow for editing CUDA locally while
-receiving diagnostics from a remote B200 Kubernetes dev pod.
+receiving diagnostics from a dedicated CPU-only Kubernetes tooling pod.
 
 The problem this solves: local macOS `clangd` cannot accurately impersonate the
 remote NVIDIA CUDA/B200 environment. For example, local `clangd` falls back to
 `sm_52` and reports setup errors such as `Cannot find CUDA installation` and
-`Cannot find libdevice`. Instead, Neovim starts `clangd-21` inside the synced
-B200 pod and maps local paths to remote paths.
+`Cannot find libdevice`. Instead, Neovim starts `clangd-18` in a pod built from
+the pinned TRT-LLM CUDA 13.1 image and maps local paths to remote paths.
 
 ## Components
 
@@ -18,11 +18,12 @@ B200 pod and maps local paths to remote paths.
 | Stdio bridge | `~/.local/bin/remote-clangd` | Starts remote `clangd` over SSH with path mappings and either a project or fallback compilation database. Source: `~/dotfiles/bin/remote-clangd`. |
 | Headless checker | `~/.local/bin/check-remote-clangd-nvim` | Tests real Neovim config and remote diagnostics. Source: `~/dotfiles/bin/check-remote-clangd-nvim`. |
 | SSH/sync substrate | `rexec`, `~/.config/rexec/pods.yaml`, `.rexec.yaml` | Keeps the pod SSH shim, port-forward, and Mutagen sync alive. |
+| Kubernetes manifest | `~/dotfiles/kubernetes/remote-clangd-statefulset.yaml` | Runs the CPU-only Vultr pod with the pinned TRT-LLM image and Clang 18. |
 
 The Neovim config is managed separately from this dotfiles repo at
 `~/.config/nvim` / `dukebw/kickstart.nvim`. This document records the workflow
 and operational model in dotfiles because it depends on `rexec`, SSH, and the
-Baseten B200 pod setup.
+Vultr tooling pod.
 
 `~/dotfiles/install.sh` symlinks the dotfiles copies of `remote-clangd` and
 `check-remote-clangd-nvim` into `~/.local/bin`.
@@ -38,18 +39,18 @@ flowchart LR
     rexec[rexec / Mutagen / SSH alias]
   end
 
-  subgraph pod[B200 Kubernetes dev pod]
+  subgraph pod[CPU-only Kubernetes tooling pod]
     workdir[/workspace/<repo>]
     cdb[/tmp/remote-clangd/<hash>/compile_commands.json]
-    clangd[clangd-21\n--cuda-gpu-arch=sm_100a]
+    clangd[clangd-18\n--cuda-gpu-arch=sm_100a]
     cuda[/usr/local/cuda]
   end
 
   nvim --> module
   module -->|CUDA buffer matches profile| bridge
-  bridge -->|ssh baseten-dev-pod| clangd
+  bridge -->|ssh baseten-remote-clangd-pod| clangd
   rexec -->|flushes local edits| workdir
-  bridge -->|generates fallback CUDA CDB| cdb
+  bridge -->|configures or generates CDB| cdb
   clangd --> cdb
   clangd --> cuda
   clangd -->|LSP diagnostics over stdio| nvim
@@ -75,26 +76,45 @@ flowchart TD
   detach --> remote[remote-clangd wrapper over SSH]
 ```
 
-Current private profile shape:
+Abbreviated TRT-LLM-specific profile shape:
 
 ```lua
 return {
   {
-    name = 'b200',
+    name = 'trt_llm',
     local_prefix = os.getenv('HOME') .. '/work',
+    root_name_pattern = '^trt%-llm',
     remote_prefix = '/workspace',
-    ssh_alias = 'baseten-dev-pod',
-    clangd = 'clangd-21',
-    compiler = 'clang++-21',
+    rexec_pod = 'clangd',
+    ssh_alias = 'baseten-remote-clangd-pod',
+    clangd = 'clangd-18',
+    compiler = 'clang++-18',
     cuda_arch = 'sm_100a',
     cuda_path = '/usr/local/cuda',
-    filetypes = { 'cuda' },
+    cmake = {
+      source_dir = 'cpp',
+      environment = { OPAL_PREFIX = '/opt/hpcx/ompi' },
+      args = {
+        '-G', 'Ninja',
+        '-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc',
+        '-DCMAKE_CUDA_ARCHITECTURES=100-real',
+        '-DMPI_C_COMPILER=/opt/hpcx/ompi/bin/mpicc',
+        '-DMPI_CXX_COMPILER=/opt/hpcx/ompi/bin/mpicxx',
+        '-DPython3_EXECUTABLE=/usr/bin/python3',
+        '-DTensorRT_ROOT=/usr/local/tensorrt',
+        '-DTRTLLM_FETCHCONTENT_CACHE=/tmp/remote-clangd/fetchcontent-cache',
+        '-DBUILD_PYT=ON',
+      },
+    },
+    filetypes = { 'c', 'cpp', 'cuda' },
     preflight = true,
   },
 }
 ```
 
-This means any local CUDA file under:
+The TRT-LLM profile handles C, C++, and CUDA in roots whose name starts with
+`trt-llm`. A lower-priority profile handles CUDA in other repositories under
+`~/work`; a local path such as:
 
 ```text
 ~/work/<repo>
@@ -108,15 +128,15 @@ is diagnosed using the matching remote path:
 
 ## Setting Up A New Repo
 
-For a new local repo at `~/work/new-repo`, the remote clangd profile already
+For a new local repo at `~/work/new-repo`, the generic CUDA profile already
 matches the path. The required setup is to create or refresh the matching remote
-workdir and make sure the B200 pod has LLVM 21 installed.
+workdir; the dedicated pod installs Clang 18 during startup.
 
 From the new repo root:
 
 ```bash
 cd ~/work/new-repo
-REXEC_LOCAL_ROOT="$PWD" REXEC_WORKDIR="/workspace/new-repo" rexec --setup
+REXEC_POD=clangd REXEC_LOCAL_ROOT="$PWD" REXEC_WORKDIR="/workspace/new-repo" rexec --setup
 ```
 
 When no `.rexec.yaml` exists, the paired root variables form an ephemeral
@@ -128,11 +148,11 @@ rules and normal `r`/`rexec` use.
 Check the remote clangd toolchain:
 
 ```bash
-rexec --shell 'command -v clangd-21 && command -v clang++-21'
+rexec -p clangd --shell 'command -v clangd-18 && command -v clang++-18'
 ```
 
-If either binary is missing, install LLVM 21 in the pod using the command in
-the recovery section below.
+The StatefulSet installs `clangd-18` during pod startup. Reapply its manifest if
+either binary is missing.
 
 Then open a CUDA file locally:
 
@@ -145,6 +165,8 @@ In Neovim, `:LspInfo` should show:
 ```text
 remote_clangd_b200
 ```
+
+TRT-LLM roots use `remote_clangd_trt_llm` instead.
 
 It should not show local `clangd` for that CUDA buffer.
 
@@ -169,17 +191,18 @@ sequenceDiagram
   participant M as custom.remote_clangd.lua
   participant R as rexec
   participant W as remote-clangd wrapper
-  participant S as ssh baseten-dev-pod
-  participant C as clangd-21 in pod
+  participant S as ssh baseten-remote-clangd-pod
+  participant C as clangd-18 in pod
 
   N->>M: FileType cuda
   M->>M: Match profile and compute remote_root
-  M->>R: rexec --flush --quiet true
+  M->>R: REXEC_POD=clangd rexec --flush --quiet true
   R-->>M: Mutagen flushed / SSH tunnel alive
   M->>W: start LSP cmd with local-root, remote-root, ssh-alias
-  W->>S: ssh -T baseten-dev-pod '<remote command>'
-  S->>S: generate /tmp/remote-clangd/<hash>/compile_commands.json
-  S->>C: exec clangd-21 --compile-commands-dir=... --path-mappings=local=remote
+  W->>W: fingerprint CMake inputs and source paths
+  W->>S: ssh -T baseten-remote-clangd-pod '<remote command>'
+  S->>S: configure /tmp/remote-clangd/<hash> when missing or stale
+  S->>C: exec clangd-18 --compile-commands-dir=... --path-mappings=local=remote
   C-->>N: initialize response and diagnostics over stdio
 ```
 
@@ -188,40 +211,42 @@ messages to stdout, because stdout is the LSP JSON stream.
 
 ## Remote Compile Database
 
-The workflow does not write `compile_commands.json` into shared repos.
-
-Projects can set `compile_commands_dir` to a path relative to their remote root.
-If that directory does not contain `compile_commands.json`, the bridge logs the
-missing database and generates a remote-only fallback there. This lets a fresh
-worktree start immediately; a later CMake configure overwrites the fallback and
-becomes authoritative without changing editor configuration.
-
-When the remote host is only a Docker host, set `container` in the project
-profile. The bridge validates the compilation database on the host and runs
-clangd through `docker exec -i` in that container. The worktree must be mounted
-at the same absolute remote path in the container. Container profiles must set
-`compile_commands_dir` to a host path visible at the same location in the
-container, which also gives the fallback a shared location.
-
-When no project-provided compile database is configured, `remote-clangd`
-generates a fallback database in remote scratch space:
+The workflow does not write `compile_commands.json` or build artifacts into
+synced repositories. A project with a `cmake` profile gets a build directory
+keyed by its full remote root:
 
 ```text
 /tmp/remote-clangd/<hash>/compile_commands.json
 ```
 
+Before connecting, the bridge fingerprints the configure command, all
+`CMakeLists.txt` and `*.cmake` contents, and the set of C/C++/CUDA source paths.
+It acquires a per-build remote lock and reruns CMake when that fingerprint
+changes or the database is absent. Editing source contents does not trigger a
+configure; adding or removing a source or changing CMake does. Separate
+worktrees have separate hashes and configure once each. TRT-LLM FetchContent
+repositories share `/tmp/remote-clangd/fetchcontent-cache` to reduce subsequent
+worktree setup time.
+
+Projects may instead set `compile_commands_dir` to use an existing database. A
+container profile must use this mode because CMake automation currently runs on
+the SSH host. The worktree and database paths must be visible at the same
+locations inside the container.
+
+When no CMake profile or existing database is configured, `remote-clangd`
+generates a generic fallback database in the same per-root scratch location.
+
 Fallback generation covers C, C++, CUDA, and header extensions. CUDA entries
 get a parse command like:
 
 ```text
-clang++-21
+clang++-18
 -x cuda
 --cuda-path=/usr/local/cuda
 --no-cuda-version-check
 --cuda-gpu-arch=sm_100a
 -I/usr/local/cuda/include
 -std=c++17
--O3
 -fPIC
 -c <file>
 ```
@@ -265,17 +290,15 @@ Expected failure cases:
 Recovery after moving pods:
 
 ```bash
-rexec --setup
-REXEC_LOCAL_ROOT=~/work/<repo> REXEC_WORKDIR=/workspace/<repo> rexec --flush --quiet true
+rexec --setup -p clangd
+REXEC_POD=clangd REXEC_LOCAL_ROOT=~/work/<repo> REXEC_WORKDIR=/workspace/<repo> rexec --flush --quiet true
 ```
 
-If the pod is fresh, install LLVM 21 in the pod:
+If the pod is missing or its image changed, reapply the checked-in manifest:
 
 ```bash
-wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key > /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-printf '%s\n' 'deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main' > /etc/apt/sources.list.d/llvm-21.list
-apt-get update
-apt-get install -y --no-install-recommends clangd-21 clang-21
+KUBECONFIG=~/.rcli/kubeconfig/rancher/vultr-us-sea-prod-1.yaml \
+  kubectl apply -f ~/dotfiles/kubernetes/remote-clangd-statefulset.yaml
 ```
 
 ## Verification
@@ -335,8 +358,16 @@ clangd is still attached or the remote path failed before startup.
 
 ## Current Tradeoffs
 
-- The fallback compile database is intentionally generic; it is for editor
-  parsing, not authoritative builds.
+- The generic fallback is editor bootstrapping metadata, not an authoritative
+  build configuration. The TRT-LLM profile uses a real CMake database instead.
+- First attachment to a new TRT-LLM worktree waits for CMake configuration;
+  later attachments reuse it until the configure fingerprint changes.
+- The per-worktree database and shared dependency cache are pod-local scratch.
+  A pod recreation clears them and the next attachment configures them again.
+- The dedicated pod requests no GPU. Its CUDA 13.1 and TensorRT headers come
+  from the pinned TRT-LLM release image.
+- `/workspace` is ephemeral. Mutagen repopulates it from the authoritative local
+  checkout after pod recreation.
 - Each profile assumes its configured clangd/compiler is available on the pod
   or in its tooling container.
 - The local Mac remains the source of truth for editing and Git. The pod is

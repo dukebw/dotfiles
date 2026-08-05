@@ -1,13 +1,13 @@
 ---
 name: mutagen-remote-workflow
-description: Set up or use the `r`/`rexec` Kubernetes GPU pod workflow with Mutagen sync, SSH over kubectl port-forward, and local-only credentials. Use when the user mentions rexec, r, mutagen, remote builds, GPU dev pods, kubectl exec, or syncing files to a Kubernetes pod.
+description: Set up or use the `r`/`rexec` Kubernetes pod workflow with Mutagen sync, SSH over kubectl port-forward, and local-only credentials. Use when the user mentions rexec, r, mutagen, remote builds, remote clangd, GPU dev pods, kubectl exec, or syncing files to a Kubernetes pod.
 ---
 
 # Mutagen Remote Workflow Setup
 
 Use this skill when working with the dotfiles `r`/`rexec` workflow.
 
-The current workflow targets Kubernetes GPU dev pods, not Coder workspaces.
+The current workflow targets Kubernetes dev and tooling pods, not Coder workspaces.
 Do not put private SSH keys, GitHub tokens, or kubeconfig files on the pod.
 
 ## Architecture
@@ -18,9 +18,9 @@ Do not put private SSH keys, GitHub tokens, or kubeconfig files on the pod.
                 +---------------------------+
                 |                           |
 +---------------v---------------+     +-----v---------------------------+
-| Local MacBook                 |     | Kubernetes GPU dev pod          |
+| Local MacBook                 |     | Kubernetes dev/tooling pod      |
 |                               |     |                                 |
-| Editor, Git, GitHub auth      |     | Docker, GPUs, build/test tools   |
+| Editor, Git, GitHub auth      |     | Compiler/build/test tools        |
 | kubeconfig                    |     | sshd on localhost-only tunnel    |
 | SSH private key               |     | authorized_keys has public key   |
 | Mutagen daemon                |     | synced working tree              |
@@ -55,6 +55,7 @@ Read that file before changing the workflow. Keep it updated when changing
 | `bin/rexec` | Python CLI for pod setup, Mutagen sync, and remote execution. |
 | `bin/r` | Wrapper that runs `rexec --flush`, streams output, and writes logs locally. |
 | `docs/rexec-kubernetes-pod.md` | Full architecture, setup, security, and troubleshooting docs. |
+| `kubernetes/remote-clangd-statefulset.yaml` | CPU-only Vultr pod for remote CUDA/TRT-LLM clangd. |
 | `~/.config/rexec/pods.yaml` | Global pod registry: pod key → k8s pod name, ssh alias, tunnel port, cluster defaults (ADR 0002). |
 | `.rexec.yaml` at the worktree root | Untracked worktree sync config: `remote_workdir` + `ignore` only, pod-agnostic. |
 | `~/.config/rexec/pod_ed25519` | Local throwaway private key for the pod SSH shim. |
@@ -83,7 +84,7 @@ rexec --setup -p <key>
 
 ```bash
 rexec --pods
-r -p <key> nvidia-smi
+r -p <key> uname -a
 rexec --quiet hostname
 rexec --shell 'pwd && ls'
 ```
@@ -101,6 +102,10 @@ pods:
     pod: brendanduke-dev-pod-b200-0
     ssh_alias: baseten-dev-pod
     ssh_local_port: 22222
+  clangd:
+    pod: remote-clangd-debugging-brendanduke-0
+    ssh_alias: baseten-remote-clangd-pod
+    ssh_local_port: 22230
   21ca:
     pod: brendanduke-tp8-dev-pod-b200-0
     ssh_alias: baseten-tp8-pod
@@ -119,8 +124,12 @@ ignore:
   - .DS_Store
 ```
 
-Mutagen session names are always derived: `<worktree-dirname>-<podkey>`
-(e.g. `baseten-dspark-21ca`); sessions auto-create on first flush.
+Mutagen session names are always derived:
+`<root-basename>-<8-char-root-hash>-<podkey>` (e.g.
+`baseten-dspark-1a2b3c4d-21ca`); the full-root hash prevents nested repositories
+with the same basename in different worktrees from colliding. Sessions
+auto-create on first flush. A legacy `<root-basename>-<podkey>` session is
+reused only when both endpoints exactly match the resolved worktree config.
 
 Pod selection precedence: `-p/--pod <key>` flag, then `$REXEC_POD`, then the
 registry `default:`. Worktree config discovery: `--config`, `REXEC_CONFIG`,
@@ -189,12 +198,12 @@ If the port-forward fails, inspect the selected pod's log:
 cat ~/.config/rexec/port-forward-<key>.log
 ```
 
-If sync is stale, flush or recreate the Mutagen session (derived name
-`<worktree-dirname>-<podkey>`):
+If sync is stale, get its derived name from `mutagen sync list`, then flush or
+recreate it:
 
 ```bash
-mutagen sync flush <worktree>-<key>
-mutagen sync terminate <worktree>-<key>
+mutagen sync flush <root>-<hash>-<key>
+mutagen sync terminate <root>-<hash>-<key>
 rexec --setup -p <key>
 ```
 
@@ -217,8 +226,10 @@ Update all relevant places together:
 
 - `bin/rexec`
 - `bin/r`
+- `bin/remote-clangd`
 - `install.sh`
 - `README.md`
+- `docs/remote-clangd.md`
 - `docs/rexec-kubernetes-pod.md`
 - `.claude/skills/mutagen-remote-workflow/SKILL.md`
 
@@ -226,7 +237,7 @@ Run at least:
 
 ```bash
 python3 -m py_compile bin/rexec
-bash -n bin/r install.sh
+bash -n bin/r bin/remote-clangd install.sh
 ```
 
 If a pod is available, verify:

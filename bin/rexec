@@ -9,6 +9,7 @@ the pod only receives a throwaway public key in /root/.ssh/authorized_keys.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import shlex
@@ -60,6 +61,12 @@ def eprint(*args: object, **kwargs: Any) -> None:
 
 def expand_path(value: str | os.PathLike[str]) -> Path:
     return Path(os.path.expandvars(str(value))).expanduser()
+
+
+def mutagen_session_name(local_root: str, pod_key: str) -> str:
+    resolved_root = str(Path(local_root).resolve())
+    root_hash = hashlib.sha256(resolved_root.encode()).hexdigest()[:8]
+    return f"{Path(resolved_root).name}-{root_hash}-{pod_key}"
 
 
 def find_project_config(start: Path) -> Path | None:
@@ -244,8 +251,9 @@ def load_config(path: Path | None, pod_flag: str | None) -> dict[str, Any]:
 
     cfg["kubeconfig"] = str(expand_path(cfg["kubeconfig"]))
     cfg["local_root"] = str(expand_path(cfg["local_root"]))
-    # One session per (worktree, pod) pair; derived, never declared.
-    cfg["mutagen_session"] = f"{Path(cfg['local_root']).name}-{pod_key}"
+    cfg["legacy_mutagen_session"] = f"{Path(cfg['local_root']).name}-{pod_key}"
+    # Basenames collide for nested repositories repeated across worktrees.
+    cfg["mutagen_session"] = mutagen_session_name(cfg["local_root"], pod_key)
     return cfg
 
 
@@ -280,11 +288,12 @@ def kubectl(cfg: dict[str, Any], args: list[str], **kwargs: Any) -> subprocess.C
     return run(["kubectl", "--kubeconfig", cfg["kubeconfig"], *args], **kwargs)
 
 
-def kubectl_auth_hint(cfg: dict[str, Any]) -> str:
+def kubectl_preflight_hint(cfg: dict[str, Any]) -> str:
     return (
-        "Kubernetes/Rancher auth appears to be expired. Refresh it with:\n"
+        "Kubernetes pod preflight failed. Check the configured pod and access with:\n"
         f"  KUBECONFIG={shlex.quote(cfg['kubeconfig'])} "
         f"kubectl get pod -n {shlex.quote(cfg['namespace'])} {shlex.quote(cfg['pod'])}\n"
+        f"If this returns NotFound, update {POD_REGISTRY} or recreate the pod. "
         "If prompted, choose oktaProvider. Then rerun rexec/r."
     )
 
@@ -305,7 +314,7 @@ def kubectl_auth_preflight(cfg: dict[str, Any]) -> None:
         eprint(f"{BLUE}Checking Kubernetes access...{NC}")
         result = subprocess.run(cmd, check=False)
         if result.returncode != 0:
-            eprint(kubectl_auth_hint(cfg))
+            eprint(kubectl_preflight_hint(cfg))
             raise SystemExit(result.returncode)
         return
 
@@ -325,12 +334,12 @@ def kubectl_auth_preflight(cfg: dict[str, Any]) -> None:
             output = output.decode(errors="replace")
         if output.strip():
             eprint(output.rstrip())
-        eprint(kubectl_auth_hint(cfg))
+        eprint(kubectl_preflight_hint(cfg))
         raise SystemExit(124) from exc
     if result.returncode != 0:
         if result.stdout.strip():
             eprint(result.stdout.rstrip())
-        eprint(kubectl_auth_hint(cfg))
+        eprint(kubectl_preflight_hint(cfg))
         raise SystemExit(result.returncode)
 
 
@@ -664,6 +673,7 @@ def mutagen_session_state(name: str) -> dict[str, Any] | None:
     status = ""
     side = ""
     files: dict[str, int | None] = {"alpha": None, "beta": None}
+    urls: dict[str, str] = {"alpha": "", "beta": ""}
     for line in result.stdout.splitlines():
         stripped = line.strip()
         if line.startswith("Alpha:"):
@@ -679,11 +689,20 @@ def mutagen_session_state(name: str) -> dict[str, Any] | None:
         if line and not line[0].isspace():
             side = ""
             continue
+        if side and stripped.startswith("URL:"):
+            urls[side] = stripped.removeprefix("URL:").strip()
+            continue
         if side and files[side] is None:
             match = re.match(r"(\d+) files? \(", stripped)
             if match:
                 files[side] = int(match.group(1))
-    return {"status": status, "alpha_files": files["alpha"], "beta_files": files["beta"]}
+    return {
+        "status": status,
+        "alpha_files": files["alpha"],
+        "beta_files": files["beta"],
+        "alpha_url": urls["alpha"],
+        "beta_url": urls["beta"],
+    }
 
 
 # Safety halts produced by a recreated (empty) pod-side root, e.g. after
@@ -734,6 +753,19 @@ def ensure_mutagen_session(cfg: dict[str, Any]) -> None:
     if mutagen_session_exists(name):
         repair_halted_mutagen_session(cfg)
         return
+
+    legacy_name = cfg["legacy_mutagen_session"]
+    legacy_state = mutagen_session_state(legacy_name)
+    if legacy_state is not None:
+        expected_alpha = str(Path(cfg["local_root"]).resolve())
+        expected_beta = f"{cfg['ssh_alias']}:{cfg['remote_workdir']}"
+        if (
+            legacy_state["alpha_url"] == expected_alpha
+            and legacy_state["beta_url"] == expected_beta
+        ):
+            cfg["mutagen_session"] = legacy_name
+            repair_halted_mutagen_session(cfg)
+            return
 
     eprint(f"{BLUE}Creating Mutagen sync session {name}...{NC}")
     cmd = [
