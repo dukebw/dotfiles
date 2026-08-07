@@ -12,12 +12,13 @@ clients and a phone browser.
 
 ```text
 Phone browser
-    | private HTTPS over Tailscale
+    | loads https://app.opencode.ai
+    | authenticated private HTTPS request over Tailscale
 Tailscale Serve
     | http://127.0.0.1:4096
-OpenCode Web, supervised by launchd
+OpenCode 2 API, supervised by launchd
     | repository and shell tools on the Mac
-Laptop TUI clients using `opencode attach`
+Laptop TUI clients using `opencode --server`
 
 Generated static artifact
     | authenticated publication from the Baseten Tailnet
@@ -47,8 +48,12 @@ here-now
 
 | Purpose | Version-controlled source | Installed path |
 | --- | --- | --- |
+| OpenCode shim | `~/dotfiles/bin/opencode` | `~/.local/bin/opencode` |
+| MCP compatibility bridge | `~/dotfiles/bin/opencode-mcp-remote` | `~/.local/bin/opencode-mcp-remote` |
+| Version updater | `~/dotfiles/bin/opencode-update` | `~/.local/bin/opencode-update` |
 | Server wrapper | `~/dotfiles/bin/opencode-web-server` | `~/.local/bin/opencode-web-server` |
 | LaunchAgent | `~/dotfiles/launchd/ai.opencode.web.plist` | `~/Library/LaunchAgents/ai.opencode.web.plist` |
+| Update LaunchAgent | `~/dotfiles/launchd/ai.opencode.update.plist` | `~/Library/LaunchAgents/ai.opencode.update.plist` |
 | here-now publisher | `~/dotfiles/bin/here-now-publish` | `~/.local/bin/here-now-publish` |
 | Global commands | `~/dotfiles/opencode/commands` | `~/.config/opencode/commands` |
 | Attach function | `~/dotfiles/zsh/.zshrc` | `~/.zshrc` |
@@ -69,6 +74,7 @@ Install the dotfile links:
 ```zsh
 cd ~/dotfiles
 ./install.sh
+opencode-update --no-restart
 ```
 
 Store a long, fixed password from the password manager. Keeping `-w` as the
@@ -111,6 +117,10 @@ Start the agent:
 launchctl bootstrap \
   gui/$UID \
   "$HOME/Library/LaunchAgents/ai.opencode.web.plist"
+
+launchctl bootstrap \
+  gui/$UID \
+  "$HOME/Library/LaunchAgents/ai.opencode.update.plist"
 ```
 
 The wrapper defaults to `~/work/baseten`. To run it manually against a
@@ -135,10 +145,12 @@ Discover the current private URL rather than recording it:
 tailscale serve status
 ```
 
-On Android, keep Tailscale connected, open the reported HTTPS URL, authenticate
-as user `opencode`, and add the page to the home screen. Android Always-on VPN
-can keep Tailscale connected; do not enable blocking connections without VPN
-unless that behavior is explicitly desired.
+On Android, keep Tailscale connected and open `https://app.opencode.ai`. Add a
+remote server using the reported private HTTPS URL, username `opencode`, and
+the Keychain password, then add the hosted app to the home screen. The private
+URL serves only the API and returns 404 when opened directly. Android Always-on
+VPN can keep Tailscale connected; do not enable blocking connections without
+VPN unless that behavior is explicitly desired.
 
 ## Publish artifacts with here-now
 
@@ -169,8 +181,9 @@ only under `~/.local/state/here-now/aliases`; they must not be committed. Omit
 
 ## Daily use
 
-The `oc` shell function retrieves the password from Keychain and attaches the
-TUI to the shared backend while preserving the pane's current directory:
+The `oc` shell function retrieves the password from Keychain and connects the
+OpenCode 2 TUI to the shared backend while preserving the pane's current
+directory:
 
 ```zsh
 oc
@@ -180,10 +193,10 @@ oc -s <session-id>
 
 Do not use plain `opencode` when the intent is to share the live backend with
 the phone. Seeing the same persisted session list is not proof of attachment.
-Verify an attached client with:
+Verify a connected client with:
 
 ```zsh
-pgrep -fl "opencode attach"
+pgrep -fl "opencode2.*--server http://127.0.0.1:4096"
 ```
 
 ## Operations
@@ -204,12 +217,16 @@ Inspect local logs:
 
 ```zsh
 tail -f "$HOME/Library/Logs/opencode-web.error.log"
+tail -f "$HOME/Library/Logs/opencode-update.log"
 ```
 
-The LaunchAgent uses `KeepAlive` and `caffeinate -i`. It restarts OpenCode after
-failure and prevents idle system sleep even on battery. Closing a MacBook lid
-still normally sleeps the machine. After a reboot, the user must log in and
-unlock the Keychain before this user LaunchAgent can operate normally.
+The server LaunchAgent uses `KeepAlive` and `caffeinate -i`. It restarts
+OpenCode after failure and prevents idle system sleep even on battery. The
+update LaunchAgent checks `@opencode-ai/cli@next` daily at 04:00, atomically
+activates new builds, restarts the server, and rolls back when the new server
+does not become healthy. Closing a MacBook lid still normally sleeps the
+machine. After a reboot, the user must log in and unlock the Keychain before
+these user LaunchAgents can operate normally.
 
 ## Verify and troubleshoot
 
@@ -217,8 +234,9 @@ Check in this order:
 
 ```zsh
 launchctl print gui/$UID/ai.opencode.web
+launchctl print gui/$UID/ai.opencode.update
 lsof -nP -iTCP:4096 -sTCP:LISTEN
-curl -o /dev/null -sS -w '%{http_code}\n' http://127.0.0.1:4096/global/health
+curl -o /dev/null -sS -w '%{http_code}\n' http://127.0.0.1:4096/api/health
 curl -fsSL http://go/here-now-llm
 tailscale serve status
 tailscale status
@@ -226,8 +244,8 @@ tailscale status
 
 The listener must be `127.0.0.1:4096`, and the unauthenticated health request
 must return `401`. Common failures are a locked or missing Keychain item, a
-closed lid, disconnected Tailscale, a stale password cached on the phone, or a
-second OpenCode process already using port 4096.
+closed lid, disconnected Tailscale, stale credentials saved in the hosted app,
+or a second OpenCode process already using port 4096.
 
 ## Rotate the password
 

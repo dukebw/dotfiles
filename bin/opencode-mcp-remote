@@ -1,0 +1,47 @@
+#!/usr/bin/env node
+
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+
+const [serverUrl, ...args] = process.argv.slice(2);
+if (!serverUrl) {
+  console.error("usage: opencode-mcp-remote <server-url> [mcp-remote options]");
+  process.exit(2);
+}
+
+const child = spawn(
+  "npx",
+  ["-y", "mcp-remote@0.1.38", serverUrl, "--silent", ...args],
+  { stdio: ["pipe", "pipe", "inherit"] },
+);
+
+child.stdout.pipe(process.stdout);
+
+const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
+input.on("line", (line) => {
+  let output = line;
+  try {
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      // Older MCP servers may reject V2's structured elicitation capability.
+      delete message.params?.capabilities?.elicitation;
+      output = JSON.stringify(message);
+    }
+  } catch {
+    // Preserve malformed input so the underlying proxy reports the protocol error.
+  }
+  child.stdin.write(`${output}\n`);
+});
+input.on("close", () => child.stdin.end());
+
+child.on("error", (error) => {
+  console.error(`failed to start mcp-remote: ${error.message}`);
+  process.exit(1);
+});
+child.on("exit", (code) => {
+  process.exit(code ?? 1);
+});
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => child.kill(signal));
+}

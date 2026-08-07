@@ -42,7 +42,8 @@ cd ~/dotfiles && ./install.sh
 - `opencode/opencode.json` - OpenCode config
 - `opencode/commands/` - global OpenCode slash commands
 - `.claude/skills/opencode-remote/SKILL.md` - private remote OpenCode runbook
-- `launchd/ai.opencode.web.plist` - supervised OpenCode web server
+- `launchd/ai.opencode.web.plist` - supervised OpenCode 2 API server
+- `launchd/ai.opencode.update.plist` - daily OpenCode 2 preview updater
 - `ssh/config.template` - X11 forwarding for Coder
 
 ### Remote Helpers
@@ -53,16 +54,20 @@ cd ~/dotfiles && ./install.sh
 - `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
 - `bin/remote-clangd` - stdio bridge to pod-hosted `clangd-18` with per-worktree CMake databases
 - `bin/check-remote-clangd-nvim` - headless verification for remote CUDA diagnostics in Neovim
-- `bin/opencode-web-server` - Keychain-authenticated OpenCode web server for Tailscale Serve
+- `bin/opencode` - OpenCode 2 shim backed by the versioned local installation
+- `bin/opencode-mcp-remote` - compatibility bridge for older remote MCP servers
+- `bin/opencode-update` - install and atomically activate `@opencode-ai/cli@next`
+- `bin/opencode-web-server` - Keychain-authenticated OpenCode 2 API server for Tailscale Serve
 - `bin/here-now-publish` - publish and version internal artifacts through here-now
 
 ## Remote OpenCode
 
-The remote OpenCode setup runs one localhost-only web backend under a macOS
-LaunchAgent. Laptop `oc` clients attach to that backend, while a phone reaches
-it through private Tailscale Serve HTTPS. The password remains in macOS
-Keychain and no tailnet identity or URL is committed. Generated static reports
-are published to centrally hosted here-now rather than served from this Mac.
+The remote OpenCode setup runs one localhost-only OpenCode 2 API server under a
+macOS LaunchAgent. Laptop `oc` clients connect directly, while the hosted
+OpenCode app reaches it through private Tailscale Serve HTTPS. The password
+remains in macOS Keychain and no tailnet identity or URL is committed.
+Generated static reports are published to centrally hosted here-now rather
+than served from this Mac.
 
 See [the remote OpenCode skill](.claude/skills/opencode-remote/SKILL.md) for the
 architecture, secure installation, daily workflow, and troubleshooting.

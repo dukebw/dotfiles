@@ -1,0 +1,190 @@
+#!/bin/zsh
+
+set -euo pipefail
+umask 077
+
+readonly package="@opencode-ai/cli"
+readonly channel="next"
+readonly root="$HOME/.local/share/opencode2"
+readonly versions_dir="$root/versions"
+readonly current_link="$root/current"
+readonly lock_dir="$root/update.lock"
+readonly log_dir="$HOME/Library/Logs"
+readonly log_file="$log_dir/opencode-update.log"
+readonly service="gui/$UID/ai.opencode.web"
+
+restart_mode="changed"
+case "${1:-}" in
+  "") ;;
+  --no-restart) restart_mode="never" ;;
+  --restart) restart_mode="always" ;;
+  *)
+    print -u2 "usage: opencode-update [--no-restart|--restart]"
+    exit 2
+    ;;
+esac
+(( $# <= 1 )) || {
+  print -u2 "usage: opencode-update [--no-restart|--restart]"
+  exit 2
+}
+
+mkdir -p "$versions_dir" "$log_dir"
+
+log() {
+  local line="$(date '+%F %T') $*"
+  print -r -- "$line"
+  print -r -- "$line" >>"$log_file"
+}
+
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  log "OpenCode update skipped: another update is running"
+  exit 0
+fi
+
+install_dir=""
+cleanup() {
+  if [[ -n "$install_dir" && -d "$install_dir" ]]; then
+    rm -rf "$install_dir"
+  fi
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+activate() {
+  local target="$1"
+  local pending_link="$root/.current.$$"
+
+  rm -f "$pending_link"
+  ln -s "$target" "$pending_link"
+  /bin/mv -fh "$pending_link" "$current_link"
+}
+
+binary_version() {
+  local value
+
+  value="$("$1" --version 2>/dev/null || true)"
+  value="${value##* }"
+  print -r -- "${value#v}"
+}
+
+wait_for_health() {
+  local attempt code
+
+  for attempt in {1..30}; do
+    code=$(
+      /usr/bin/curl \
+        --silent \
+        --output /dev/null \
+        --write-out '%{http_code}' \
+        http://127.0.0.1:4096/api/health || true
+    )
+    [[ "$code" == "401" ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+started_at=$(date +%s)
+log "OpenCode update started"
+
+npm_bin="$(command -v npm)" || {
+  log "OpenCode update failed: npm is not available on PATH"
+  exit 1
+}
+node_bin="$(command -v node)" || {
+  log "OpenCode update failed: node is not available on PATH"
+  exit 1
+}
+
+latest="$("$npm_bin" view "$package@$channel" version --silent)"
+[[ "$latest" =~ '^[0-9A-Za-z][0-9A-Za-z._-]*$' ]] || {
+  log "OpenCode update failed: npm returned an invalid version"
+  exit 1
+}
+
+previous_target="$(readlink "$current_link" 2>/dev/null || true)"
+[[ "$previous_target" == versions/* ]] || previous_target=""
+current_version=""
+if [[ -x "$current_link/bin/opencode2" ]]; then
+  current_version="$(binary_version "$current_link/bin/opencode2")"
+fi
+
+changed=false
+version_dir="$versions_dir/$latest"
+if [[ "$current_version" != "$latest" ]]; then
+  changed=true
+  if [[ ! -x "$version_dir/bin/opencode2" ]]; then
+    install_dir="$versions_dir/.install-$latest-$$"
+    log "Installing OpenCode $latest"
+    if ! "$npm_bin" install \
+      --global \
+      --prefix "$install_dir" \
+      --no-audit \
+      --no-fund \
+      --ignore-scripts \
+      "$package@$latest" >>"$log_file" 2>&1; then
+      log "OpenCode update failed while installing $latest"
+      exit 1
+    fi
+
+    if ! "$node_bin" \
+      "$install_dir/lib/node_modules/@opencode-ai/cli/postinstall.mjs" \
+      >>"$log_file" 2>&1; then
+      log "OpenCode update failed while preparing the platform binary"
+      exit 1
+    fi
+
+    installed_version="$(binary_version "$install_dir/bin/opencode2")"
+    [[ "$installed_version" == "$latest" ]] || {
+      log "OpenCode update failed: installed version ${installed_version:-missing} did not match $latest"
+      exit 1
+    }
+
+    rm -rf "$version_dir"
+    /bin/mv "$install_dir" "$version_dir"
+    install_dir=""
+  fi
+
+  activate "versions/$latest"
+  log "Activated OpenCode $latest"
+else
+  log "OpenCode $latest is already current"
+fi
+
+restart=false
+if [[ "$restart_mode" == "always" ]]; then
+  restart=true
+elif [[ "$restart_mode" == "changed" && "$changed" == true ]]; then
+  restart=true
+fi
+
+if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
+  log "Restarting the OpenCode server"
+  launchctl kickstart -k "$service"
+  if ! wait_for_health; then
+    if [[ -n "$previous_target" && -x "$root/$previous_target/bin/opencode2" ]]; then
+      log "OpenCode $latest failed health checks; rolling back"
+      activate "$previous_target"
+      launchctl kickstart -k "$service"
+      wait_for_health || log "OpenCode rollback failed health checks"
+    else
+      log "OpenCode $latest failed health checks and no rollback is available"
+    fi
+    exit 1
+  fi
+  log "OpenCode server is healthy"
+elif [[ "$changed" == true ]]; then
+  log "OpenCode $latest is staged for the next server start"
+fi
+
+previous_dir=""
+if [[ -n "$previous_target" ]]; then
+  previous_dir="$root/$previous_target"
+fi
+for directory in "$versions_dir"/*(N/); do
+  [[ "$directory" == "$version_dir" || "$directory" == "$previous_dir" ]] && continue
+  rm -rf "$directory"
+done
+
+finished_at=$(date +%s)
+log "OpenCode update completed in $(( finished_at - started_at ))s"

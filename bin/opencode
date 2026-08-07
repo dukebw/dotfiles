@@ -1,0 +1,17 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+readonly opencode_bin="$HOME/.local/share/opencode2/current/bin/opencode2"
+readonly updater="$HOME/.local/bin/opencode-update"
+
+if [[ ! -x "$opencode_bin" ]]; then
+  [[ -x "$updater" ]] || {
+    print -u2 "opencode-update is not installed"
+    exit 1
+  }
+  "$updater" --no-restart
+fi
+
+export OPENCODE_DISABLE_AUTOUPDATE=1
+exec "$opencode_bin" "$@"

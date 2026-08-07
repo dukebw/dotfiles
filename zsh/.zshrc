@@ -163,7 +163,6 @@ export EDITOR=nvim
 # fd alias (hidden files)
 alias fdh="fd --hidden --no-ignore"
 export PATH="$HOME/.local/bin:$PATH"
-export PATH="$HOME/.opencode/bin:$PATH"
 
 # Remote log runner wrapper.
 r() {
@@ -184,8 +183,11 @@ oc() {
       -w
   ) || return 1
 
+  # OpenCode 2 mounts every route under /api; a bare origin makes the TUI
+  # request /session/... and 404.
   OPENCODE_SERVER_PASSWORD="$opencode_server_password" \
-    command opencode attach http://127.0.0.1:4096 \
-      --dir "$PWD" \
-      "$@"
+    command opencode \
+      --server http://127.0.0.1:4096/api \
+      "$@" \
+      "$PWD"
 }
