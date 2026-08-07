@@ -34,6 +34,7 @@ def pod(
     phase: str = "Running",
     container_states: dict[str, str] | None = None,
     container_readiness: dict[str, bool] | None = None,
+    privileged: tuple[str, ...] = (),
 ) -> dict:
     labels = {"baseten.co/model": model} if model else {}
     container_states = container_states or {}
@@ -46,6 +47,11 @@ def pod(
                 {
                     "name": container_name,
                     "resources": {"requests": {"nvidia.com/gpu": str(gpus)}},
+                    **(
+                        {"securityContext": {"privileged": True}}
+                        if container_name in privileged
+                        else {}
+                    ),
                 }
                 for container_name, gpus in containers
             ],
@@ -72,6 +78,11 @@ def pod(
             ],
         },
     }
+
+
+def node(name: str, gpus: int = 0) -> dict:
+    allocatable = {"nvidia.com/gpu": str(gpus)} if gpus else {}
+    return {"metadata": {"name": name}, "status": {"allocatable": allocatable}}
 
 
 class B10GPUFleetTests(unittest.TestCase):
@@ -187,6 +198,57 @@ class B10GPUFleetTests(unittest.TestCase):
             )
 
         self.assertEqual([row["name"] for row in result], ["brendanduke-starting"])
+
+    def test_privileged_pod_on_gpu_node_is_fleeted_as_observer(self) -> None:
+        # Privileged dev pods request no nvidia.com/gpu yet see every node GPU
+        # via device passthrough — the fleet reports the node's allocation.
+        dev = pod(
+            "baseten",
+            "b200-debugging-brendanduke-dev-0",
+            [("dev", 0)],
+            privileged=("dev",),
+        )
+        nodes = {"items": [node("node-b200-debugging-brendanduke-dev-0", gpus=8)]}
+        with mock.patch.object(
+            B10_GPU, "kubectl_json", side_effect=[{"items": [dev]}, nodes]
+        ):
+            result = B10_GPU.owned_pods(
+                {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
+            )
+
+        self.assertEqual(
+            [(row["name"], row["container"], row["gpus"]) for row in result],
+            [("b200-debugging-brendanduke-dev-0", "dev", 8)],
+        )
+
+    def test_privileged_pod_on_gpu_less_node_stays_out_of_fleet(self) -> None:
+        clangd = pod(
+            "baseten",
+            "remote-clangd-debugging-brendanduke-0",
+            [("dev", 0)],
+            privileged=("dev",),
+        )
+        nodes = {"items": [node("node-remote-clangd-debugging-brendanduke-0")]}
+        with mock.patch.object(
+            B10_GPU, "kubectl_json", side_effect=[{"items": [clangd]}, nodes]
+        ):
+            result = B10_GPU.owned_pods(
+                {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
+            )
+
+        self.assertEqual(result, [])
+
+    def test_unprivileged_zero_request_pod_needs_no_node_query(self) -> None:
+        plain = pod("baseten", "brendanduke-cpu-only", [("dev", 0)])
+        with mock.patch.object(
+            B10_GPU, "kubectl_json", return_value={"items": [plain]}
+        ) as kubectl_json_mock:
+            result = B10_GPU.owned_pods(
+                {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
+            )
+
+        self.assertEqual(result, [])
+        self.assertEqual(kubectl_json_mock.call_count, 1)
 
 
 class GPUFleetLauncherTests(unittest.TestCase):

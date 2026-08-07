@@ -605,6 +605,47 @@ def cmd_owner(args: argparse.Namespace) -> None:
         delete_debugger(ctx, debugger_pod)
 
 
+def privileged_containers(pod: dict[str, Any]) -> list[str]:
+    return [
+        container.get("name", "")
+        for container in pod.get("spec", {}).get("containers", [])
+        if (container.get("securityContext") or {}).get("privileged")
+    ]
+
+
+def observer_rows(
+    ctx: dict[str, Any], observers: list[tuple[dict[str, Any], str]]
+) -> list[tuple[dict[str, Any], str, int]]:
+    # Resolve observer candidates against node capacity so a privileged pod on
+    # a GPU-less node never spawns a dead monitor pane.
+    if not observers:
+        return []
+    nodes = kubectl_json(ctx, ["get", "nodes"])
+    gpus_by_node = {
+        node_name(node): allocatable_gpus(node) for node in nodes.get("items", [])
+    }
+    result = []
+    for pod, container_name in observers:
+        gpus = gpus_by_node.get(pod.get("spec", {}).get("nodeName", ""), 0)
+        if gpus > 0:
+            result.append((pod, container_name, gpus))
+    return result
+
+
+def fleet_row(pod: dict[str, Any], container_name: str, gpus: int) -> dict[str, Any]:
+    metadata = pod.get("metadata", {})
+    return {
+        "namespace": metadata.get("namespace", ""),
+        "name": metadata.get("name", ""),
+        "container": container_name,
+        "gpus": gpus,
+        "model": metadata.get("labels", {}).get("baseten.co/model", ""),
+        "node": pod.get("spec", {}).get("nodeName", ""),
+        "phase": pod.get("status", {}).get("phase", ""),
+        "ready": pod_ready_summary(pod),
+    }
+
+
 def owned_pods(
     ctx: dict[str, Any],
     namespaces: list[str],
@@ -614,31 +655,35 @@ def owned_pods(
     data = kubectl_json(ctx, ["get", "pods", "--all-namespaces", "-o", "json"])
     namespace_set = set(namespaces)
     rows = []
+    observers: list[tuple[dict[str, Any], str]] = []
     for pod in data.get("items", []):
         metadata = pod.get("metadata", {})
-        namespace = metadata.get("namespace", "")
-        name = metadata.get("name", "")
-        if namespace not in namespace_set or not pod_matches_owner(pod, owner):
+        if metadata.get("namespace", "") not in namespace_set or not pod_matches_owner(
+            pod, owner
+        ):
             continue
         phase = pod.get("status", {}).get("phase", "")
         if not all_phases and phase != "Running":
             continue
-        model = metadata.get("labels", {}).get("baseten.co/model", "")
-        for container in gpu_containers(pod):
+        containers = gpu_containers(pod)
+        if not containers:
+            # Privileged dev pods request no nvidia.com/gpu yet see every GPU
+            # on their node via device passthrough; fleet them as observers of
+            # the node's full allocation.
+            observers.extend(
+                (pod, container_name)
+                for container_name in privileged_containers(pod)
+                if all_phases or container_is_running(pod, container_name)
+            )
+            continue
+        for container in containers:
             if not all_phases and not container_is_running(pod, container["name"]):
                 continue
-            rows.append(
-                {
-                    "namespace": namespace,
-                    "name": name,
-                    "container": container["name"],
-                    "gpus": container["gpus"],
-                    "model": model,
-                    "node": pod.get("spec", {}).get("nodeName", ""),
-                    "phase": phase,
-                    "ready": pod_ready_summary(pod),
-                }
-            )
+            rows.append(fleet_row(pod, container["name"], container["gpus"]))
+    rows.extend(
+        fleet_row(pod, container_name, gpus)
+        for pod, container_name, gpus in observer_rows(ctx, observers)
+    )
     return sorted(rows, key=lambda row: (row["namespace"], row["name"], row["container"]))
 
 
@@ -647,6 +692,8 @@ def cmd_fleet(args: argparse.Namespace) -> None:
 
     Kubernetes is the authority for fleet membership; .rexec*.yaml files are
     sync plumbing and deliberately play no part here (see dotfiles ADR 0001).
+    Privileged containers with no nvidia.com/gpu request (dev pods using device
+    passthrough) count as observers of their node's full GPU allocation.
     """
     ctx = base_context(args)
     owner = args.owner or os.environ.get("FLEET_USER") or os.environ.get("USER", "")
