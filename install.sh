@@ -85,7 +85,7 @@ backup_and_link "$DOTFILES_DIR/opencode/opencode.json" "$HOME/.config/opencode/o
 backup_and_link "$DOTFILES_DIR/opencode/commands" "$HOME/.config/opencode/commands"
 backup_and_link "$DOTFILES_DIR/opencode/plugins" "$HOME/.config/opencode/plugins"
 backup_and_link "$DOTFILES_DIR/opencode/scripts" "$HOME/.config/opencode/scripts"
-backup_and_link "$DOTFILES_DIR/opencode/tui.json" "$HOME/.config/opencode/tui.json"
+backup_and_link "$DOTFILES_DIR/opencode/cli.json" "$HOME/.config/opencode/cli.json"
 
 mkdir -p "$HOME/.claude"
 backup_and_link "$DOTFILES_DIR/claude/settings.json" "$HOME/.claude/settings.json"

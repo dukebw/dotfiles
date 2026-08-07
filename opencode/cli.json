@@ -1,0 +1,24 @@
+{
+  "keybinds": {
+    "leader": "ctrl+x",
+    "sidebar_toggle": "ctrl+b",
+    "session_timeline": "<leader>shift+t",
+    "session_parent": "<leader>p",
+    "messages_half_page_up": "ctrl+u",
+    "messages_half_page_down": "ctrl+d",
+    "messages_first": "<leader>g",
+    "messages_last": "<leader>shift+g"
+  },
+  "diffs": {
+    "wrap": "word"
+  },
+  "session": {
+    "sidebar": "hide",
+    "scrollbar": false,
+    "thinking": "hide"
+  },
+  "tabs": {
+    "enabled": false
+  },
+  "animations": true
+}
