@@ -13,6 +13,26 @@ notification_message="${4:-$session_title}"
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 log() { echo "$(date '+%F %T') opencode-notify: $*" >>"$HOME/.cache/pane-notify.log"; }
 
+# OpenCode 2 runs the notify plugin in every server process (the launchd API
+# server plus the CLI's on-demand background service), and all of them observe
+# the same durable event stream, so one turn invokes this script once per
+# process. Dedupe with an atomic mkdir keyed on (session, title, 15s bucket);
+# checking the previous bucket too closes the race when the processes land on
+# either side of a bucket edge.
+lock_root="$HOME/.cache/opencode-notify-locks"
+mkdir -p "$lock_root"
+bucket=$(( $(date +%s) / 15 ))
+lock_key() { /sbin/md5 -qs "${session_id}|${notification_title}|$1"; }
+if [ -d "$lock_root/$(lock_key $((bucket - 1)))" ]; then
+  log "suppressed duplicate: sid=$session_id '$notification_title' bucket=$((bucket - 1))"
+  exit 0
+fi
+if ! mkdir "$lock_root/$(lock_key "$bucket")" 2>/dev/null; then
+  log "suppressed duplicate: sid=$session_id '$notification_title' bucket=$bucket"
+  exit 0
+fi
+find "$lock_root" -mindepth 1 -maxdepth 1 -type d -mmin +60 -delete 2>/dev/null || true
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 resolved=$("$script_dir/opencode-resolve-pane.sh" "$session_id" "$session_title" || true)
 log "sid=$session_id title='$session_title' notification='$notification_title' resolved='${resolved:-NONE}'"
