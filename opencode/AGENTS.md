@@ -52,6 +52,10 @@ and recreate the deployment before proceeding.
 Create repository clones and Git worktrees under `~/work/`, not temporary
 directories.
 
+For `feat/k3` work, use `~/work/baseten-k3/` for monorepo changes and
+`~/work/baseten-k3/mp/baseten_dynamo/cache_aware_routing_trtllm/baseten_trtllm/trt-llm/`
+for TensorRT-LLM changes unless Brendan explicitly specifies another checkout.
+
 Do not push, create remote branches, or open pull requests unless I explicitly
 request that remote operation. Local commits are allowed.
 
