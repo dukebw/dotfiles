@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -231,6 +232,145 @@ class GPUFleetLauncherTests(unittest.TestCase):
             ),
             "v5:dynamo/worker:main",
         )
+
+    def test_live_pane_ids_uses_zellij_launch_commands_in_current_tab(self) -> None:
+        panes = [
+            {
+                "id": 10,
+                "is_plugin": False,
+                "exited": False,
+                "tab_id": 2,
+                "terminal_command": "gpu-fleet",
+            },
+            {
+                "id": 11,
+                "is_plugin": False,
+                "exited": False,
+                "tab_id": 2,
+                "terminal_command": (
+                    "env GPU_FLEET_PANE=v5:dynamo/worker:main kubectl exec"
+                ),
+            },
+            {
+                "id": 12,
+                "is_plugin": False,
+                "exited": False,
+                "tab_id": 2,
+                "terminal_command": (
+                    "env GPU_FLEET_PANE=v5:dynamo/worker:main kubectl exec"
+                ),
+            },
+            {
+                "id": 13,
+                "is_plugin": False,
+                "exited": True,
+                "tab_id": 2,
+                "terminal_command": (
+                    "env GPU_FLEET_PANE=v5:dynamo/exited:main kubectl exec"
+                ),
+            },
+            {
+                "id": 14,
+                "is_plugin": False,
+                "exited": False,
+                "tab_id": 3,
+                "terminal_command": (
+                    "env GPU_FLEET_PANE=v5:dynamo/other-tab:main kubectl exec"
+                ),
+            },
+        ]
+        result = mock.Mock(returncode=0, stdout=json.dumps(panes), stderr="")
+        with (
+            mock.patch.dict(GPU_FLEET.os.environ, {"ZELLIJ_PANE_ID": "10"}),
+            mock.patch.object(GPU_FLEET.subprocess, "run", return_value=result),
+        ):
+            pane_ids = GPU_FLEET.live_pane_ids()
+
+        self.assertEqual(pane_ids, {"v5:dynamo/worker:main": [11, 12]})
+
+    def test_main_spawns_only_the_missing_pane(self) -> None:
+        pods = [
+            {
+                "namespace": "dynamo",
+                "name": "worker-a",
+                "container": "main",
+                "model": "model-a",
+                "node": "apse8-a0001",
+            },
+            {
+                "namespace": "dynamo",
+                "name": "worker-b",
+                "container": "main",
+                "model": "model-b",
+                "node": "apse8-a0002",
+            },
+        ]
+        data = {"pods": pods, "kubeconfig": "/tmp/kubeconfig"}
+        result = mock.Mock(returncode=0, stderr="")
+        with (
+            mock.patch.dict(GPU_FLEET.os.environ, {"ZELLIJ": "1"}),
+            mock.patch.object(GPU_FLEET, "fleet", return_value=data),
+            mock.patch.object(
+                GPU_FLEET,
+                "live_pane_ids",
+                return_value={GPU_FLEET.pod_key(pods[0]): [41]},
+            ),
+            mock.patch.object(GPU_FLEET.subprocess, "run", return_value=result) as run,
+        ):
+            GPU_FLEET.main()
+
+        commands = [call.args[0] for call in run.call_args_list]
+        spawned = [command for command in commands if command[:2] == ["zellij", "run"]]
+        self.assertEqual(len(spawned), 1)
+        self.assertIn(f"{GPU_FLEET.MARKER}={GPU_FLEET.pod_key(pods[1])}", spawned[0])
+        self.assertFalse(
+            any(
+                "close-pane" in command or "toggle-floating-panes" in command
+                for command in commands
+            )
+        )
+
+    def test_main_closes_only_duplicate_and_stale_panes(self) -> None:
+        fleet_pod = {
+            "namespace": "dynamo",
+            "name": "worker",
+            "container": "main",
+            "model": "model",
+            "node": "apse8-a0001",
+        }
+        data = {"pods": [fleet_pod], "kubeconfig": "/tmp/kubeconfig"}
+        key = GPU_FLEET.pod_key(fleet_pod)
+        result = mock.Mock(returncode=0, stderr="")
+        with (
+            mock.patch.dict(GPU_FLEET.os.environ, {"ZELLIJ": "1"}),
+            mock.patch.object(GPU_FLEET, "fleet", return_value=data),
+            mock.patch.object(
+                GPU_FLEET,
+                "live_pane_ids",
+                return_value={key: [41, 42], "v4:dynamo/old-worker:main": [43]},
+            ),
+            mock.patch.object(GPU_FLEET.subprocess, "run", return_value=result) as run,
+        ):
+            GPU_FLEET.main()
+
+        commands = [call.args[0] for call in run.call_args_list]
+        closed_pane_ids = [
+            command[command.index("--pane-id") + 1]
+            for command in commands
+            if "close-pane" in command
+        ]
+        self.assertCountEqual(
+            closed_pane_ids,
+            ["terminal_42", "terminal_43"],
+        )
+        self.assertTrue(
+            any(
+                "change-floating-pane-coordinates" in command
+                and "terminal_41" in command
+                for command in commands
+            )
+        )
+        self.assertFalse(any(command[:2] == ["zellij", "run"] for command in commands))
 
     def test_pane_command_targets_gpu_container_and_has_fallbacks(self) -> None:
         fleet_pod = {

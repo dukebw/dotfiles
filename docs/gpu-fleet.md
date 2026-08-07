@@ -23,11 +23,11 @@ q       quit one nvitop (its pane closes)
    installed `nvitop`, otherwise `uvx --from nvitop nvitop`, and finally
    `nvidia-smi -l 1`. No ssh shim or port-forward is involved, so a newly
    Running pod is immediately monitorable and dead tunnels cannot break it.
-3. **Reconcile by respawn**: pressing `C-a F` re-queries the fleet. If the
+3. **Incremental reconcile**: pressing `C-a F` re-queries the fleet. If the
    live panes already match, it just toggles the layer. If the fleet changed,
-   all fleet panes are killed and respawned with fresh layout. Pane processes
-   are tracked via a `GPU_FLEET_PANE=<namespace>/<pod>` marker in their command
-   line.
+   matching panes stay connected and are repositioned, stale or duplicate panes
+   close, and only missing panes spawn. Panes are tracked from Zellij's retained
+   launch command via a `GPU_FLEET_PANE=<namespace>/<pod>` marker.
 4. **Adaptive layout**: portrait-first tiling uses at most two columns. Six pods
    use 2×3, eight use 2×4, and a full 18-pane NVL72 rack uses 2×9.
 

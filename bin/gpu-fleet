@@ -6,10 +6,10 @@ dotfiles ADR 0001). Each pane runs a GPU monitor in its container via
 `kubectl exec`; no rexec/ssh plumbing is involved, so a GPU container is
 monitorable the moment it is running.
 
-Reconcile-by-respawn semantics (bind to a key, e.g. tmux-mode F):
+Incremental reconcile semantics (bind to a key, e.g. tmux-mode F):
   - fleet unchanged vs live panes -> toggle the floating layer (like `f`)
-  - fleet changed                 -> kill all fleet panes, respawn with fresh
-                                     adaptive layout
+  - fleet changed                 -> retain matching panes, close stale or
+                                     duplicate panes, and spawn missing panes
 Adaptive layout: portrait-first grids use at most two columns; a full 18-pane
 NVL72 rack is 2x9.
 
@@ -22,8 +22,9 @@ import os
 import re
 import subprocess
 import sys
+from typing import NoReturn
 
-MARKER = "GPU_FLEET_PANE"  # embedded in each pane's command line for pgrep
+MARKER = "GPU_FLEET_PANE"  # retained in Zellij's launch command
 PANE_VERSION = 5  # bump when existing panes must be respawned
 MONITOR_COMMAND = """if command -v nvitop >/dev/null 2>&1; then
   exec nvitop
@@ -37,7 +38,7 @@ else
 fi"""
 
 
-def fail(msg: str) -> None:
+def fail(msg: str) -> NoReturn:
     print(f"gpu-fleet: {msg}", file=sys.stderr)
     print("\npress any key to close", file=sys.stderr)
     try:
@@ -64,14 +65,37 @@ def pod_key(pod: dict) -> str:
     return f"v{PANE_VERSION}:{pod['namespace']}/{pod['name']}:{pod['container']}"
 
 
-def live_pane_keys() -> set[str]:
-    proc = subprocess.run(["pgrep", "-fl", MARKER], capture_output=True, text=True)
-    keys = set()
-    for line in proc.stdout.splitlines():
-        m = re.search(rf"{MARKER}=(\S+)", line)
-        if m:
-            keys.add(m.group(1))
-    return keys
+def live_pane_ids() -> dict[str, list[int]]:
+    proc = subprocess.run(
+        ["zellij", "action", "list-panes", "--json", "--all"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        fail(f"could not list Zellij panes:\n{proc.stderr.strip()}")
+
+    panes = json.loads(proc.stdout)
+    launcher_pane_id = os.environ.get("ZELLIJ_PANE_ID", "").removeprefix("terminal_")
+    current_tab_id = next(
+        (
+            pane["tab_id"]
+            for pane in panes
+            if not pane["is_plugin"] and str(pane["id"]) == launcher_pane_id
+        ),
+        None,
+    )
+    if current_tab_id is None:
+        fail("could not identify the current Zellij tab")
+
+    pane_ids: dict[str, list[int]] = {}
+    for pane in panes:
+        if pane["is_plugin"] or pane["exited"] or pane["tab_id"] != current_tab_id:
+            continue
+        command = pane.get("terminal_command") or ""
+        match = re.search(rf"(?:^|\s){MARKER}=(\S+)", command)
+        if match:
+            pane_ids.setdefault(match.group(1), []).append(pane["id"])
+    return pane_ids
 
 
 def geometry(n: int) -> list[dict[str, str]]:
@@ -132,13 +156,60 @@ def main() -> None:
             f"{', '.join(data['namespaces'])}"
         )
 
-    if {pod_key(pod) for pod in pods} == live_pane_keys():
+    desired_panes = {
+        pod_key(pod): (pod, geo) for pod, geo in zip(pods, geometry(len(pods)))
+    }
+    live_panes = live_pane_ids()
+    kept_pane_ids: dict[str, int] = {}
+    reconciled = False
+
+    for key, pane_ids in live_panes.items():
+        keep = 0
+        if key in desired_panes:
+            kept_pane_ids[key] = pane_ids[0]
+            keep = 1
+        for pane_id in pane_ids[keep:]:
+            subprocess.run(
+                [
+                    "zellij",
+                    "action",
+                    "close-pane",
+                    "--pane-id",
+                    f"terminal_{pane_id}",
+                ],
+                check=False,
+            )
+            reconciled = True
+
+    missing_keys = desired_panes.keys() - kept_pane_ids.keys()
+    if not reconciled and not missing_keys:
         subprocess.run(["zellij", "action", "toggle-floating-panes"], check=False)
         return
 
-    subprocess.run(["pkill", "-f", MARKER], check=False)  # panes close via close-on-exit
+    for key, pane_id in kept_pane_ids.items():
+        geo = desired_panes[key][1]
+        subprocess.run(
+            [
+                "zellij",
+                "action",
+                "change-floating-pane-coordinates",
+                "--pane-id",
+                f"terminal_{pane_id}",
+                "-x",
+                geo["x"],
+                "-y",
+                geo["y"],
+                "--width",
+                geo["width"],
+                "--height",
+                geo["height"],
+            ],
+            check=False,
+        )
 
-    for pod, geo in zip(pods, geometry(len(pods))):
+    for key, (pod, geo) in desired_panes.items():
+        if key not in missing_keys:
+            continue
         cmd = pane_command(data, pod, geo)
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
