@@ -44,6 +44,7 @@ cd ~/dotfiles && ./install.sh
 - `.claude/skills/opencode-remote/SKILL.md` - private remote OpenCode runbook
 - `launchd/ai.opencode.web.plist` - supervised OpenCode 2 API server
 - `launchd/ai.opencode.update.plist` - daily OpenCode 2 preview updater
+- `launchd/ai.gh-stack.upstream-sync.plist` - daily upstream sync for `dukebw/gh-stack`
 - `ssh/config.template` - X11 forwarding for Coder
 
 ### Remote Helpers
@@ -58,6 +59,7 @@ cd ~/dotfiles && ./install.sh
 - `bin/opencode-mcp-remote` - compatibility bridge for older remote MCP servers
 - `bin/opencode-update` - install and atomically activate `@opencode-ai/cli@next`
 - `bin/opencode-web-server` - Keychain-authenticated OpenCode 2 API server for Tailscale Serve
+- `bin/gh-stack-upstream-sync` - validate and synchronize `github/gh-stack` into the fork
 - `bin/here-now-publish` - publish and version internal artifacts through here-now
 
 ## Remote OpenCode

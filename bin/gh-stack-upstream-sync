@@ -1,0 +1,134 @@
+#!/bin/zsh
+
+set -euo pipefail
+umask 077
+
+readonly repo_dir="$HOME/work/gh-stack-upstream-sync"
+readonly state_dir="$HOME/.local/state/gh-stack-upstream-sync"
+readonly lock_dir="$state_dir/lock"
+readonly log_dir="$HOME/Library/Logs"
+readonly log_file="$log_dir/gh-stack-upstream-sync.log"
+readonly opencode_bin="$HOME/.local/bin/opencode"
+
+mkdir -p "$state_dir" "$log_dir"
+exec >>"$log_file" 2>&1
+
+log() {
+  print -r -- "$(date '+%F %T') $*"
+}
+
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  lock_pid="$(cat "$lock_dir/pid" 2>/dev/null || true)"
+  if [[ "$lock_pid" == <-> ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    log "gh-stack sync skipped: another run is active"
+    exit 0
+  fi
+  rm -f "$lock_dir/pid"
+  rmdir "$lock_dir" 2>/dev/null && mkdir "$lock_dir" || {
+    log "gh-stack sync failed: could not recover stale lock"
+    exit 1
+  }
+fi
+print -r -- "$$" >"$lock_dir/pid"
+trap 'rm -f "$lock_dir/pid"; rmdir "$lock_dir" 2>/dev/null || true' EXIT
+
+log "gh-stack sync started"
+
+[[ -d "$repo_dir/.git" ]] || {
+  log "gh-stack sync failed: dedicated clone is missing at $repo_dir"
+  exit 1
+}
+[[ -x "$opencode_bin" ]] || {
+  log "gh-stack sync failed: OpenCode is missing at $opencode_bin"
+  exit 1
+}
+
+cd "$repo_dir"
+[[ "$(git branch --show-current)" == "main" ]] || {
+  log "gh-stack sync failed: dedicated clone is not on main"
+  exit 1
+}
+
+git fetch origin main
+git fetch fork main
+
+resolve_conflicts() {
+  local password prompt
+
+  prompt='Resolve the current merge conflicts while synchronizing github/gh-stack main into dukebw/gh-stack main.
+
+This is a dedicated automation clone with an existing merge in progress. Resolve only that merge. Preserve the fork-specific reconcile command, reconciliation protocol v1, native GitHub stack behavior, and compatibility with dukebw/stack-pr. Follow AGENTS.md. Inspect both sides of every conflict instead of choosing ours or theirs wholesale.
+
+Stage the resolved files and create the merge commit. Run go vet ./... before go test -race -count=1 ./.... Do not push, force-push, rebase, reset, abort the merge, modify remotes, or start unrelated work. If the intended resolution is ambiguous or validation fails, leave the repository unpushed and clearly report the blocker.'
+
+  password=$(
+    /usr/bin/security find-generic-password \
+      -a "opencode-server" \
+      -s "ai.opencode.web" \
+      -w
+  )
+
+  log "Starting OpenCode conflict resolution"
+  OPENCODE_SERVER_PASSWORD="$password" "$opencode_bin" run \
+    --server http://127.0.0.1:4096 \
+    --auto \
+    --agent build \
+    --title "Daily gh-stack upstream sync" \
+    "$prompt"
+  unset password
+  log "OpenCode conflict resolution completed"
+}
+
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+  resolve_conflicts
+elif [[ -n "$(git status --porcelain)" ]]; then
+  log "gh-stack sync failed: dedicated clone has changes outside a merge"
+  exit 1
+else
+  head="$(git rev-parse HEAD)"
+  fork_tip="$(git rev-parse fork/main)"
+  upstream_tip="$(git rev-parse origin/main)"
+
+  if [[ "$head" != "$fork_tip" ]]; then
+    git merge-base --is-ancestor "$fork_tip" "$head" && \
+      git merge-base --is-ancestor "$upstream_tip" "$head" || {
+        log "gh-stack sync failed: local main is not a pending sync of fork/main"
+        exit 1
+      }
+  elif git merge-base --is-ancestor "$upstream_tip" "$fork_tip"; then
+    log "gh-stack sync completed: fork/main is already current"
+    exit 0
+  elif ! git merge --no-edit origin/main; then
+    git rev-parse -q --verify MERGE_HEAD >/dev/null || {
+      log "gh-stack sync failed before creating a merge"
+      exit 1
+    }
+    resolve_conflicts
+  fi
+fi
+
+git rev-parse -q --verify MERGE_HEAD >/dev/null && {
+  log "gh-stack sync failed: merge remains in progress"
+  exit 1
+}
+[[ -z "$(git status --porcelain)" ]] || {
+  log "gh-stack sync failed: validation requires a clean committed result"
+  exit 1
+}
+
+git merge-base --is-ancestor origin/main HEAD || {
+  log "gh-stack sync failed: result does not contain origin/main"
+  exit 1
+}
+git merge-base --is-ancestor fork/main HEAD || {
+  log "gh-stack sync failed: result does not contain the previous fork/main"
+  exit 1
+}
+
+log "Running go vet"
+go vet ./...
+log "Running race tests"
+go test -race -count=1 ./...
+
+git push fork HEAD:main
+log "gh-stack sync completed and pushed"
