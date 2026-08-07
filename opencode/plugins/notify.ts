@@ -1,8 +1,11 @@
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Plugin } from "@opencode-ai/plugin";
+import { promisify } from "node:util";
+import { Plugin } from "@opencode-ai/plugin";
 
-const NOTIFY_SCRIPT = join(
+const execute = promisify(execFile);
+const notifyScript = join(
   homedir(),
   ".config",
   "opencode",
@@ -10,60 +13,97 @@ const NOTIFY_SCRIPT = join(
   "opencode-notify.sh",
 );
 
-export const NotifyPlugin: Plugin = async ({ client, $ }) => {
-  return {
-    event: async ({ event }) => {
-      // CLI events can precede the SDK typings pinned in this config.
-      const eventType: string = event.type;
-      const properties = event.properties as {
-        sessionID?: string;
-        questions?: Array<{ question?: string }>;
-      };
-      const notification = (() => {
-        if (eventType === "session.idle") {
-          return {
-            sessionID: properties.sessionID,
-            title: "opencode — turn finished",
-          };
+async function notify(
+  sessionID: string,
+  sessionTitle: string,
+  title: string,
+  message: string,
+) {
+  try {
+    await execute(notifyScript, [sessionID, sessionTitle, title, message]);
+  } catch {
+    await execute("/opt/homebrew/bin/terminal-notifier", [
+      "-group",
+      sessionID,
+      "-title",
+      title,
+      "-message",
+      message,
+      "-sound",
+      "Glass",
+    ]);
+  }
+}
+
+export default Plugin.define({
+  id: "brendanduke.notifications",
+  setup(context) {
+    const controller = new AbortController();
+    const task = (async () => {
+      for await (const event of context.event.subscribe({
+        signal: controller.signal,
+      })) {
+        try {
+          const notification = (() => {
+            // Turn end is session.execution.{succeeded,failed,interrupted};
+            // interrupted is user-initiated, so it needs no notification.
+            if (event.type === "session.execution.succeeded") {
+              return {
+                sessionID: event.data.sessionID,
+                title: "opencode — turn finished",
+              };
+            }
+            if (event.type === "session.execution.failed") {
+              return {
+                sessionID: event.data.sessionID,
+                title: "opencode — turn failed",
+              };
+            }
+            if (event.type === "question.asked") {
+              return {
+                sessionID: event.data.sessionID,
+                title: "opencode — question",
+                message: event.data.questions?.[0]?.question ?? "Input needed",
+              };
+            }
+          })();
+          if (!notification) continue;
+
+          // Subagent (child-session) events are parent-turn noise. Session
+          // lookup failure must not suppress the notification itself.
+          let parentID: string | undefined;
+          let sessionTitle = "session";
+          try {
+            const session = await context.session.get({
+              sessionID: notification.sessionID,
+            });
+            const info = (session as any)?.data ?? session;
+            parentID = info?.parentID;
+            sessionTitle = info?.title ?? sessionTitle;
+          } catch (error) {
+            console.error("opencode notify: session lookup failed", error);
+          }
+          if (parentID) continue;
+
+          await notify(
+            notification.sessionID,
+            sessionTitle,
+            notification.title,
+            notification.message ?? sessionTitle,
+          );
+        } catch (error) {
+          console.error("OpenCode notification failed", error);
         }
-        if (
-          eventType === "question.asked" ||
-          eventType === "question.v2.asked"
-        ) {
-          return {
-            sessionID: properties.sessionID,
-            title: "opencode — question",
-            message: properties.questions?.[0]?.question ?? "Input needed",
-          };
-        }
-      })();
-      if (!notification) {
-        return;
       }
-
-      const sessionID = notification.sessionID;
-      if (!sessionID) {
-        return;
+    })().catch((error: unknown) => {
+      if (!controller.signal.aborted) {
+        console.error("OpenCode notification plugin stopped", error);
       }
+    });
 
-      // Subagent attention events are parent-turn noise.
-      const session = await client.session.get({ path: { id: sessionID } });
-      if (session.data?.parentID) {
-        return;
-      }
-
-      const sessionTitle = session.data?.title ?? "session";
-      const message = notification.message ?? sessionTitle;
-
-      try {
-        // The script owns the notify decision (focus suppression, click
-        // action), so it can change without an opencode server restart.
-        await $`${NOTIFY_SCRIPT} ${sessionID} ${sessionTitle} ${notification.title} ${message}`;
-      } catch {
-        // Script missing/failed: plain notification, no click action.
-        const script = `display notification "${message.replace(/"/g, '\\"')}" with title "${notification.title}" sound name "Glass"`;
-        await $`osascript -e ${script}`;
-      }
-    },
-  };
-};
+    return async () => {
+      controller.abort();
+      await task;
+    };
+  },
+});

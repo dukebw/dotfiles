@@ -2,7 +2,10 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@opencode-ai/plugin": "1.16.2",
-    "@opencode-ai/sdk": "1.16.2"
+    "@opencode-ai/plugin": "0.0.0-next-16974"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.2",
+    "typescript": "^5.8.2"
   }
 }

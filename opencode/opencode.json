@@ -1,7 +1,7 @@
 {
   "model": "openai/gpt-5.6-sol-fast",
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-gemini-auth@latest"],
+  "plugins": ["./plugins/notify.ts"],
   "mcp": {
     "notion": {
       "type": "remote",
@@ -45,24 +45,10 @@
           }
         }
       }
-    },
-    "google": {
-      "models": {
-        "gemini-3.1-pro-preview-customtools": {
-          "name": "Gemini 3.1 Pro Preview (customtools)"
-        },
-        "gemini-3.1-pro-preview": {
-          "name": "Gemini 3.1 Pro Preview"
-        }
-      },
-      "options": {
-        "timeout": 600000
-      }
     }
   },
   "compaction": {
     "auto": true,
-    "prune": true,
     "reserved": 16000
   },
   "permission": "allow",
