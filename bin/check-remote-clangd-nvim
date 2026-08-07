@@ -5,29 +5,32 @@ mode="clean"
 allow_diagnostics=0
 probe_local_guard=0
 probe_tunnel_recovery=0
+definition_position=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --inject) mode="injected"; shift ;;
     --allow-diagnostics) allow_diagnostics=1; shift ;;
     --probe-local-guard) probe_local_guard=1; shift ;;
     --probe-tunnel-recovery) probe_tunnel_recovery=1; shift ;;
+    --definition) definition_position="${2:-}"; shift 2 ;;
     *) break ;;
   esac
 done
 
 file="${1:-}"
 if [[ -z "$file" ]]; then
-  printf 'usage: check-remote-clangd-nvim [--inject] [--allow-diagnostics] [--probe-local-guard] [--probe-tunnel-recovery] PATH\n' >&2
+  printf 'usage: check-remote-clangd-nvim [--inject] [--allow-diagnostics] [--probe-local-guard] [--probe-tunnel-recovery] [--definition LINE:COLUMN] PATH\n' >&2
   exit 2
 fi
 
-REMOTE_CLANGD_TEST_MODE="$mode" REMOTE_CLANGD_ALLOW_DIAGNOSTICS="$allow_diagnostics" REMOTE_CLANGD_PROBE_LOCAL_GUARD="$probe_local_guard" REMOTE_CLANGD_PROBE_TUNNEL_RECOVERY="$probe_tunnel_recovery" nvim --headless -n "$file" +'lua
+REMOTE_CLANGD_TEST_MODE="$mode" REMOTE_CLANGD_ALLOW_DIAGNOSTICS="$allow_diagnostics" REMOTE_CLANGD_PROBE_LOCAL_GUARD="$probe_local_guard" REMOTE_CLANGD_PROBE_TUNNEL_RECOVERY="$probe_tunnel_recovery" REMOTE_CLANGD_DEFINITION_POSITION="$definition_position" nvim --headless -n "$file" +'lua
 local bufnr = vim.api.nvim_get_current_buf()
 local mode = vim.env.REMOTE_CLANGD_TEST_MODE or "clean"
 local expect_diagnostics = mode == "injected"
 local allow_diagnostics = vim.env.REMOTE_CLANGD_ALLOW_DIAGNOSTICS == "1"
 local probe_local_guard = vim.env.REMOTE_CLANGD_PROBE_LOCAL_GUARD == "1"
 local probe_tunnel_recovery = vim.env.REMOTE_CLANGD_PROBE_TUNNEL_RECOVERY == "1"
+local definition_position = vim.env.REMOTE_CLANGD_DEFINITION_POSITION or ""
 
 local function out(message)
   io.stdout:write(message .. "\n")
@@ -173,6 +176,66 @@ local responses = vim.lsp.buf_request_sync(bufnr, "textDocument/documentSymbol",
 
 if not responses then
   fail "remote clangd did not answer documentSymbol"
+end
+
+if definition_position ~= "" then
+  local line, column = definition_position:match "^(%d+):(%d+)$"
+  line, column = tonumber(line), tonumber(column)
+  if not line or not column or line < 1 or column < 1 then
+    fail "definition position must be LINE:COLUMN with one-based values"
+  end
+
+  local definition_responses = vim.lsp.buf_request_sync(bufnr, "textDocument/definition", {
+    textDocument = { uri = vim.uri_from_bufnr(bufnr) },
+    position = { line = line - 1, character = column - 1 },
+  }, 30000)
+  if not definition_responses then
+    fail "remote clangd did not answer definition"
+  end
+
+  local definition_found = false
+  for client_id, response in pairs(definition_responses) do
+    local result = response.result
+    if result and not vim.tbl_isempty(result) then
+      local locations = vim.islist(result) and result or { result }
+      for _, location in ipairs(locations) do
+        local uri = location.uri or location.targetUri
+        local range = location.range or location.targetSelectionRange or location.targetRange
+        if uri and range then
+          local filename = vim.uri_to_fname(uri)
+          if vim.fn.filereadable(filename) ~= 1 then
+            fail("definition target is not readable locally: " .. filename)
+          end
+          local target_line = range.start.line + 1
+          if #vim.fn.readfile(filename, "", target_line) < target_line then
+            fail(string.format("definition target line %d is outside %s", target_line, filename))
+          end
+          local client = vim.lsp.get_client_by_id(client_id)
+          local shown, show_error = pcall(
+            vim.lsp.util.show_document,
+            location,
+            client and client.offset_encoding or "utf-16",
+            { reuse_win = true }
+          )
+          if not shown then
+            fail("show_document failed: " .. tostring(show_error))
+          end
+          if vim.api.nvim_win_get_cursor(0)[1] ~= target_line then
+            fail(string.format("definition jump did not reach line %d in %s", target_line, filename))
+          end
+          out(string.format("definition: %s:%d", filename, target_line))
+          definition_found = true
+          break
+        end
+      end
+    end
+    if definition_found then
+      break
+    end
+  end
+  if not definition_found then
+    fail "remote clangd returned no definition"
+  end
 end
 
 if expect_diagnostics then

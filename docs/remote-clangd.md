@@ -94,6 +94,7 @@ return {
     cmake = {
       source_dir = 'cpp',
       environment = { OPAL_PREFIX = '/opt/hpcx/ompi' },
+      mirror_build_paths = { '_deps/nanobind-src/include' },
       args = {
         '-G', 'Ninja',
         '-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc',
@@ -228,6 +229,13 @@ worktrees have separate hashes and configure once each. TRT-LLM FetchContent
 repositories share `/tmp/remote-clangd/fetchcontent-cache` to reduce subsequent
 worktree setup time.
 
+Definition targets may live outside the synced worktree in CMake's `_deps`.
+Paths listed in `mirror_build_paths` are copied from the remote build into the
+identical local `/tmp/remote-clangd/<hash>` path after configuration. Clangd's
+remote file URI then names a real local file, so definition jumps and Telescope
+previews can open it. The TRT-LLM profile mirrors nanobind's header tree;
+large CUDA, Torch, and Cutlass trees remain remote-only.
+
 Projects may instead set `compile_commands_dir` to use an existing database. A
 container profile must use this mode because CMake automation currently runs on
 the SSH host. The worktree and database paths must be visible at the same
@@ -329,6 +337,12 @@ check:
 
 ```bash
 check-remote-clangd-nvim --allow-diagnostics --probe-tunnel-recovery ~/work/<repo>/path/to/file.cpp
+```
+
+Verify a one-based source position resolves to a locally readable definition:
+
+```bash
+check-remote-clangd-nvim --allow-diagnostics --definition 66:5 ~/work/<repo>/path/to/bindings.cpp
 ```
 
 Expected injected output:
