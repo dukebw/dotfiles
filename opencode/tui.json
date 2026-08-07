@@ -10,5 +10,8 @@
     "session_timeline": "<leader>shift+t",
     "session_parent": "<leader>p",
     "session_child_cycle": "<leader>right"
+  },
+  "tabs": {
+    "enabled": false
   }
 }
