@@ -56,8 +56,15 @@ here-now
 | Update LaunchAgent | `~/dotfiles/launchd/ai.opencode.update.plist` | `~/Library/LaunchAgents/ai.opencode.update.plist` |
 | here-now publisher | `~/dotfiles/bin/here-now-publish` | `~/.local/bin/here-now-publish` |
 | Global commands | `~/dotfiles/opencode/commands` | `~/.config/opencode/commands` |
+| TUI config | `~/dotfiles/opencode/cli.json` | `~/.config/opencode/cli.json` |
+| Notify plugin and scripts | `~/dotfiles/opencode/{plugins,scripts}` | `~/.config/opencode/{plugins,scripts}` |
 | Attach function | `~/dotfiles/zsh/.zshrc` | `~/.zshrc` |
 | This skill | `~/dotfiles/.claude/skills/opencode-remote` | `~/.claude/skills/opencode-remote` |
+
+`cli.json` is the only TUI config OpenCode 2 reads (`tui.json` was one-shot
+migrated into it and is retired). OpenCode itself writes `cli.json` via
+tmp+rename, which replaces the symlink with a plain file — when `cli.json`
+edits stop appearing in `git status`, re-run `install.sh` to restore the link.
 
 The password is a local Keychain generic-password item:
 
@@ -191,13 +198,58 @@ oc -c
 oc -s <session-id>
 ```
 
+Every v2 API route lives under `/api`, so `oc` passes
+`--server http://127.0.0.1:4096/api`. A TUI error like
+`GET /session/... 404` means the `/api` base is missing from the URL or the
+process on 4096 is not the v2 server. Discover routes with an authenticated
+`GET /openapi.json`.
+
 Do not use plain `opencode` when the intent is to share the live backend with
 the phone. Seeing the same persisted session list is not proof of attachment.
 Verify a connected client with:
 
 ```zsh
-pgrep -fl "opencode2.*--server http://127.0.0.1:4096"
+pgrep -fl "opencode2.*--server http://127.0.0.1:4096/api"
 ```
+
+## OpenCode 2 service model
+
+Bare CLI commands (no `--server`) use an on-demand background service —
+`opencode2 serve --service` on an ephemeral port with a generated password,
+registered in `~/.local/state/opencode/service.json`. It coexists with the
+launchd server and stays: the launchd server is what provides the fixed port,
+Keychain password, boot-time presence, and supervised updates the phone setup
+requires. Every server process runs the configured plugins over the same
+durable event stream, so `opencode-notify.sh` dedupes notifications with an
+atomic mkdir lock — duplicate notifications mean that dedupe broke.
+
+MCP OAuth flow (the `mcp` subcommand rejects `--server`): authenticate bare,
+then tell the shared server to reconnect, then verify:
+
+```zsh
+opencode mcp auth <name>
+oc_curl() {
+  curl --config <(printf 'user = "opencode:%s"\n' \
+    "$(security find-generic-password -a opencode-server -s ai.opencode.web -w)") "$@"
+}
+oc_curl -X POST "http://127.0.0.1:4096/api/mcp/<name>/connect?directory=$PWD"
+oc_curl "http://127.0.0.1:4096/api/mcp?directory=$PWD"
+```
+
+`oc_curl` keeps the password out of process arguments; reuse it for any
+authenticated request in this runbook.
+
+Plugin code reloads lazily per project directory, cache-keyed on file mtime —
+editing a plugin changes nothing for already-open directories until a config
+file changes or a session starts in a fresh directory. Confirm which code is
+live via the `loading plugin ... ?mtime=` lines in
+`~/.local/share/opencode/log/opencode.log`, and confirm notification delivery
+via `~/.cache/pane-notify.log`, which logs every attempt including suppressed
+duplicates.
+
+Config edits hot-reload, but propagation through the dotfiles symlinks can lag
+minutes. Verify with an authenticated `GET /api/config`; kickstart the
+LaunchAgent when the change must apply now.
 
 ## Operations
 
