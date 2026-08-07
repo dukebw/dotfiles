@@ -49,7 +49,9 @@
   },
   "compaction": {
     "auto": true,
-    "reserved": 16000
+    "keep": {
+      "tokens": 60000
+    }
   },
   "permission": "allow",
   "agent": {
