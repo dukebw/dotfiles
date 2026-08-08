@@ -154,7 +154,9 @@ tailscale serve status
 
 On Android, keep Tailscale connected and open `https://app.opencode.ai`. Add a
 remote server using the reported private HTTPS URL, username `opencode`, and
-the Keychain password, then add the hosted app to the home screen. The private
+the Keychain password, then add the hosted app to the home screen. Enter the
+bare origin — the hosted app appends `/api/...` to every request itself; only
+the TUI's `--server` flag needs the explicit `/api` base. The private
 URL serves only the API and returns 404 when opened directly. Android Always-on
 VPN can keep Tailscale connected; do not enable blocking connections without
 VPN unless that behavior is explicitly desired.
