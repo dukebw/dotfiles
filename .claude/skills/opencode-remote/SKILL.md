@@ -12,11 +12,10 @@ clients and a phone browser.
 
 ```text
 Phone browser
-    | loads https://app.opencode.ai
     | authenticated private HTTPS request over Tailscale
 Tailscale Serve
     | http://127.0.0.1:4096
-OpenCode 2 API, supervised by launchd
+OpenCode 2 embedded web UI and API, supervised by launchd
     | repository and shell tools on the Mac
 Laptop TUI clients using `opencode --server`
 
@@ -152,27 +151,13 @@ Discover the current private URL rather than recording it:
 tailscale serve status
 ```
 
-On Android, keep Tailscale connected and open `https://app.opencode.ai`. Add a
-remote server using the reported private HTTPS URL, username `opencode`, and
-the Keychain password, then add the hosted app to the home screen. Enter the
-bare origin — the hosted app appends `/api/...` to every request itself; only
-the TUI's `--server` flag needs the explicit `/api` base. The private
-URL serves only the API and returns 404 when opened directly.
+On Android, keep Tailscale connected and open the reported private HTTPS URL
+directly. Authenticate the browser with username `opencode` and the Keychain
+password, then add the page to the home screen. Use the bare origin in the
+browser; only the TUI's `--server` flag needs the explicit `/api` base.
 
-Two limits verified 2026-08-08 by driving the hosted app in Playwright against
-this setup. First, Chrome blocks fetches from the public app origin to ts.net
-hosts (Tailscale 100.x resolves as private address space) until the user grants
-the site Local Network Access permission — curl testing passes while the
-browser fails, so test browser flows in a browser. Second, even fully
-connected (sessions download), the hosted app cannot yet browse a remote
-server's projects: its home tree only lists locally-opened projects, and the
-"Add project" folder dialog depends on desktop global-service endpoints
-(`/global/health`, `/agent`, `/experimental/capabilities`) that
-`opencode2 serve` does not expose, so sessions never render. Until upstream
-closes that gap, phone access to sessions is SSH over the tailnet to the Mac
-plus `oc`. Android Always-on
-VPN can keep Tailscale connected; do not enable blocking connections without
-VPN unless that behavior is explicitly desired.
+Android Always-on VPN can keep Tailscale connected; do not enable blocking
+connections without VPN unless that behavior is explicitly desired.
 
 ## Publish artifacts with here-now
 
@@ -311,8 +296,9 @@ tailscale status
 
 The listener must be `127.0.0.1:4096`, and the unauthenticated health request
 must return `401`. Common failures are a locked or missing Keychain item, a
-closed lid, disconnected Tailscale, stale credentials saved in the hosted app,
-or a second OpenCode process already using port 4096.
+closed lid, disconnected Tailscale, stale browser Basic Auth credentials, or a
+second OpenCode process already using port 4096. An authenticated request to
+the bare origin must return the OpenCode HTML UI.
 
 ## Rotate the password
 
