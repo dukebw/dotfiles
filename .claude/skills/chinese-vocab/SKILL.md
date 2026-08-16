@@ -138,7 +138,7 @@ OpenCode：優先用 webfetch 擷取搜尋引擎結果頁；若沒有專用 WebS
 
 **不要在完成 query ladder 之前就把某詞標成 `✗ uncovered`。**
 
-**可靠的台灣來源（優先使用）：**
+**預設輪替來源（已知回傳乾淨全文、穩定 URL；非唯一可用來源）：**
 
 | 來源 | 網域 | 類型 | 備註 |
 |------|------|------|------|
@@ -164,12 +164,6 @@ OpenCode：優先用 webfetch 擷取搜尋引擎結果頁；若沒有專用 WebS
 * 要找 `health.udn.com` / `money.udn.com` / `house.udn.com` 內容時，先走 `udn.com/search/word/2/{query}`，再**優先挑選目標子網域**的結果
 * 要找自由系子站內容時，先走 `search.ltn.com.tw/list?keyword={query}`，再依結果頁上的分類或子站網域挑選 `health.ltn.com.tw` / `ec.ltn.com.tw` / `estate.ltn.com.tw`
 * 若某來源沒有已驗證的穩定站內搜尋範本，**不要猜 hidden endpoint**；改用該來源首頁/分類頁直接導覽，或用 `site:domain` 查詢作為 fallback
-
-**較不穩定的來源（某些 harness / request patterns 可能被擋、導向告警頁、或需額外處理）：**
-- dcard.tw — 常直接回傳 403
-- forum.gamer.com.tw — 可能導向登入或兒少保護頁面
-- ptt.cc — 常可擷取，但某些板面、頁面或請求方式可能需要 cookie 或特殊處理
-- udn 部落格 (blog.udn.com) — 某些請求方式可抓到，某些會被擋；可作為備用來源但不要當主力
 
 **來源家族優先順序（依主題選來源，不要所有詞都先塞到泛新聞）：**
 
@@ -418,7 +412,6 @@ print(f"\n✓ Added {added} cards to hanzi deck ({errors} errors)")
 
 * 無單一網域 >40% 的卡片
 * 每個語域類別使用 ≥2 個不同來源
-* 口語詞彙來自論壇/摘要，而非新聞網站
 
 ## 應避免的失敗模式
 - ❌ 「排除專有名詞」- 不允許
@@ -429,7 +422,6 @@ print(f"\n✓ Added {added} cards to hanzi deck ({errors} errors)")
 - ❌ 使用 Agent/Task 子代理搜尋例句（直接用當前 harness 的搜尋/擷取工具更快更可靠）
 - ❌ 逐詞逐篇搜尋——應按主題分組，一篇文章擷取多個詞語
 - ❌ 把純上下文行（URL、英文 gloss、代號、header）當成主要詞彙
-- ❌ 對較不穩定來源不加判斷地硬抓到底（dcard 常 403；gamer 可能跳保護頁；ptt / blog.udn 在不同 harness 可能表現不一）
 - ❌ 只試一種拼法或一個查詢就放棄——必須走完 query ladder
 - ❌ 忽略相鄰上下文，導致技術詞或產品詞搜錯方向
 - ❌ 讓百科/字典在有其他可用來源時壟斷大部分例句
