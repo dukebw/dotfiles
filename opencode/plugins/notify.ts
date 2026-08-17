@@ -6,6 +6,10 @@ import { Plugin } from "@opencode-ai/plugin";
 
 const execute = promisify(execFile);
 const sessionLookupDelaysMs = [0, 250, 750];
+// `opencode run` is headless, so its turn-end notifications are pure noise.
+// The zsh `opencode` wrapper stamps run sessions with this title prefix
+// (run renames every session it prompts, so --continue/--session are covered).
+const runSessionTitlePrefix = "[run]";
 const notifyScript = join(
   homedir(),
   ".config",
@@ -112,6 +116,7 @@ export default Plugin.define({
       // failure must not suppress the notification itself.
       const session = await getSession(sessionID);
       if (session?.parentID) return;
+      if (session?.title?.startsWith(runSessionTitlePrefix)) return;
 
       const sessionTitle = session?.title ?? "session";
       await notify(sessionID, sessionTitle, title, message ?? sessionTitle);

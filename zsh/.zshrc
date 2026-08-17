@@ -191,3 +191,44 @@ oc() {
       "$@" \
       "$PWD"
 }
+
+# Stamp `opencode run` sessions with a "[run]" title marker so the notify
+# plugin suppresses their turn-end notifications (run is headless). Only
+# interactive TUI sessions should notify. `oc` uses `command opencode`, so it
+# bypasses this wrapper.
+opencode() {
+  if [[ "$1" != run ]]; then
+    command opencode "$@"
+    return
+  fi
+  shift
+  local -a args=()
+  local titled=false
+  while (( $# )); do
+    case "$1" in
+      -h|--help|--wizard)
+        command opencode run "$@"
+        return
+        ;;
+      --title=*)
+        args+=("--title=[run] ${${1#--title=}#\[run\] }")
+        titled=true
+        ;;
+      --title)
+        args+=("--title" "[run] ${${2:-}#\[run\] }")
+        shift
+        titled=true
+        ;;
+      *)
+        args+=("$1")
+        ;;
+    esac
+    shift
+  done
+  if ! $titled; then
+    local label="${args[-1]:-}"
+    [[ "$label" == -* ]] && label=""
+    args=(--title "[run] ${label:0:40}" "${args[@]}")
+  fi
+  command opencode run "${args[@]}"
+}
