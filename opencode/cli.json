@@ -1,13 +1,12 @@
 {
   "keybinds": {
     "leader": "ctrl+x",
-    "sidebar_toggle": "ctrl+b",
-    "session_timeline": "<leader>shift+t",
-    "session_parent": "<leader>p",
-    "messages_half_page_up": "ctrl+u",
-    "messages_half_page_down": "ctrl+d",
-    "messages_first": "<leader>g",
-    "messages_last": "<leader>shift+g"
+    "session.timeline": "<leader>shift+t",
+    "session.parent": "<leader>p",
+    "session.half.page.up": "ctrl+u",
+    "session.half.page.down": "ctrl+d",
+    "session.first": "<leader>g",
+    "session.last": "<leader>shift+g"
   },
   "diffs": {
     "wrap": "word"
