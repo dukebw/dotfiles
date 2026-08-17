@@ -5,7 +5,6 @@ import { promisify } from "node:util";
 import { Plugin } from "@opencode-ai/plugin";
 
 const execute = promisify(execFile);
-const sessionLookupDelaysMs = [0, 250, 750];
 const notifyScript = join(
   homedir(),
   ".config",
@@ -40,68 +39,6 @@ export default Plugin.define({
   id: "brendanduke.notifications",
   async setup(context) {
     const controller = new AbortController();
-    const sessions = new Map<
-      string,
-      { id: string; parentID?: string; title?: string }
-    >();
-
-    const sessionInfo = (value: any) => {
-      const info =
-        value?.data?.info ??
-        value?.properties?.info ??
-        value?.info ??
-        value?.data ??
-        value;
-      if (typeof info?.id !== "string") return;
-
-      const result = {
-        id: info.id,
-        parentID:
-          typeof info.parentID === "string" ? info.parentID : undefined,
-        title: typeof info.title === "string" ? info.title : undefined,
-      };
-      sessions.set(result.id, result);
-      return result;
-    };
-
-    const rememberSessionEvent = (event: any) => {
-      if (event.type === "session.created") {
-        const data = event.data;
-        sessions.set(data.sessionID, {
-          id: data.sessionID,
-          parentID: data.parentID,
-          title: data.title,
-        });
-      }
-      if (event.type === "session.renamed") {
-        const data = event.data;
-        sessions.set(data.sessionID, {
-          ...sessions.get(data.sessionID),
-          id: data.sessionID,
-          title: data.title,
-        });
-      }
-    };
-
-    const getSession = async (sessionID: string) => {
-      for (const delayMs of sessionLookupDelaysMs) {
-        if (delayMs) {
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-        }
-
-        try {
-          const info = sessionInfo(await context.session.get({ sessionID }));
-          if (info?.title) return info;
-        } catch (error) {
-          console.error("opencode notify: session lookup failed", error);
-        }
-
-        const cached = sessions.get(sessionID);
-        if (cached?.title) return cached;
-      }
-
-      return sessions.get(sessionID);
-    };
 
     const notifySession = async (
       sessionID: string,
@@ -110,10 +47,18 @@ export default Plugin.define({
     ) => {
       // Subagent (child-session) events are parent-turn noise. Session lookup
       // failure must not suppress the notification itself.
-      const session = await getSession(sessionID);
-      if (session?.parentID) return;
+      let parentID: string | undefined;
+      let sessionTitle = "session";
+      try {
+        const session = await context.session.get({ sessionID });
+        const info = (session as any)?.data ?? session;
+        parentID = info?.parentID;
+        sessionTitle = info?.title ?? sessionTitle;
+      } catch (error) {
+        console.error("opencode notify: session lookup failed", error);
+      }
+      if (parentID) return;
 
-      const sessionTitle = session?.title ?? "session";
       await notify(sessionID, sessionTitle, title, message ?? sessionTitle);
     };
 
@@ -134,12 +79,6 @@ export default Plugin.define({
         signal: controller.signal,
       })) {
         try {
-          if (
-            event.type === "session.created" ||
-            event.type === "session.renamed"
-          )
-            rememberSessionEvent(event);
-
           const notification = (() => {
             // Turn end is session.execution.{succeeded,failed,interrupted};
             // interrupted is user-initiated, so it needs no notification.
