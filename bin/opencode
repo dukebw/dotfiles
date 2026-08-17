@@ -4,6 +4,7 @@ set -euo pipefail
 
 readonly opencode_bin="$HOME/.local/share/opencode2/current/bin/opencode2"
 readonly updater="$HOME/.local/bin/opencode-update"
+readonly title_watchdog="$HOME/.config/opencode/scripts/opencode-title-watchdog.sh"
 
 if [[ ! -x "$opencode_bin" ]]; then
   [[ -x "$updater" ]] || {
@@ -14,4 +15,9 @@ if [[ ! -x "$opencode_bin" ]]; then
 fi
 
 export OPENCODE_DISABLE_AUTOUPDATE=1
+
+if [[ -n "${ZELLIJ_SESSION_NAME:-}" && -n "${ZELLIJ_PANE_ID:-}" && -x "$title_watchdog" ]]; then
+  "$title_watchdog" "$ZELLIJ_SESSION_NAME" "$ZELLIJ_PANE_ID" "$$" &
+fi
+
 exec "$opencode_bin" "$@"
