@@ -37,8 +37,43 @@ async function notify(
 
 export default Plugin.define({
   id: "brendanduke.notifications",
-  setup(context) {
+  async setup(context) {
     const controller = new AbortController();
+
+    const notifySession = async (
+      sessionID: string,
+      title: string,
+      message?: string,
+    ) => {
+      // Subagent (child-session) events are parent-turn noise. Session lookup
+      // failure must not suppress the notification itself.
+      let parentID: string | undefined;
+      let sessionTitle = "session";
+      try {
+        const session = await context.session.get({ sessionID });
+        const info = (session as any)?.data ?? session;
+        parentID = info?.parentID;
+        sessionTitle = info?.title ?? sessionTitle;
+      } catch (error) {
+        console.error("opencode notify: session lookup failed", error);
+      }
+      if (parentID) return;
+
+      await notify(sessionID, sessionTitle, title, message ?? sessionTitle);
+    };
+
+    await context.tool.hook("execute.before", async (event) => {
+      if (event.tool.split(".").at(-1) !== "question") return;
+      const input = event.input as {
+        questions?: Array<{ question?: string }>;
+      };
+      await notifySession(
+        event.sessionID,
+        "opencode — question",
+        input.questions?.[0]?.question ?? "Input needed",
+      );
+    });
+
     const task = (async () => {
       for await (const event of context.event.subscribe({
         signal: controller.signal,
@@ -69,27 +104,10 @@ export default Plugin.define({
           })();
           if (!notification) continue;
 
-          // Subagent (child-session) events are parent-turn noise. Session
-          // lookup failure must not suppress the notification itself.
-          let parentID: string | undefined;
-          let sessionTitle = "session";
-          try {
-            const session = await context.session.get({
-              sessionID: notification.sessionID,
-            });
-            const info = (session as any)?.data ?? session;
-            parentID = info?.parentID;
-            sessionTitle = info?.title ?? sessionTitle;
-          } catch (error) {
-            console.error("opencode notify: session lookup failed", error);
-          }
-          if (parentID) continue;
-
-          await notify(
+          await notifySession(
             notification.sessionID,
-            sessionTitle,
             notification.title,
-            notification.message ?? sessionTitle,
+            notification.message,
           );
         } catch (error) {
           console.error("OpenCode notification failed", error);
