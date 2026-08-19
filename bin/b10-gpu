@@ -85,7 +85,7 @@ def rcli_kubeconfig_for_context(context: str) -> str:
 
 
 def base_context(args: argparse.Namespace) -> dict[str, Any]:
-    context = current_kubectl_context()
+    context = args.context or current_kubectl_context()
     return {
         "context": context,
         "kubeconfig": rcli_kubeconfig_for_context(context),
@@ -706,6 +706,7 @@ def cmd_fleet(args: argparse.Namespace) -> None:
             json.dumps(
                 {
                     "owner": owner,
+                    "context": ctx["context"],
                     "namespaces": namespaces,
                     "kubeconfig": ctx["kubeconfig"],
                     "pods": pods,
@@ -776,6 +777,7 @@ def cmd_move(args: argparse.Namespace) -> None:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--context", help="Kubernetes context; defaults to the current context")
     parser.add_argument("--namespace", help="Default dev pod namespace")
     parser.add_argument("--pod", help="Default rexec/dev pod name")
     parser.add_argument("--gpu-product", default=DEFAULT_GPU_PRODUCT, help="GPU product label value")
@@ -785,7 +787,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Baseten Vultr B200 GPU dev-node helper using the rcli-selected Kubernetes context"
+        description="Baseten Vultr B200 GPU dev-node helper using an rcli Kubernetes context"
     )
     add_common_args(parser)
     subparsers = parser.add_subparsers(dest="command", required=True)

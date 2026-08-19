@@ -290,9 +290,52 @@ class GPUFleetLauncherTests(unittest.TestCase):
     def test_pane_key_includes_container(self) -> None:
         self.assertEqual(
             GPU_FLEET.pod_key(
-                {"namespace": "dynamo", "name": "worker", "container": "main"}
+                {
+                    "context": "ali-apse8-mpdev-1",
+                    "namespace": "dynamo",
+                    "name": "worker",
+                    "container": "main",
+                }
             ),
-            "v5:dynamo/worker:main",
+            "v6:ali-apse8-mpdev-1:dynamo/worker:main",
+        )
+
+    def test_fleet_merges_selected_and_unique_extra_contexts(self) -> None:
+        selected = {
+            "context": "gcp-ue4-prod-2",
+            "kubeconfig": "/tmp/gcp",
+            "pods": [{"name": "gcp-worker"}],
+        }
+        ali = {
+            "context": "ali-apse8-mpdev-1",
+            "kubeconfig": "/tmp/ali",
+            "pods": [{"name": "ali-worker"}],
+        }
+        with mock.patch.object(
+            GPU_FLEET, "query_fleet", side_effect=[selected, ali]
+        ) as query:
+            pods = GPU_FLEET.fleet(
+                ["gcp-ue4-prod-2", "ali-apse8-mpdev-1", "ali-apse8-mpdev-1"]
+            )
+
+        self.assertEqual(
+            query.call_args_list,
+            [mock.call(), mock.call("ali-apse8-mpdev-1")],
+        )
+        self.assertEqual(
+            pods,
+            [
+                {
+                    "name": "gcp-worker",
+                    "context": "gcp-ue4-prod-2",
+                    "kubeconfig": "/tmp/gcp",
+                },
+                {
+                    "name": "ali-worker",
+                    "context": "ali-apse8-mpdev-1",
+                    "kubeconfig": "/tmp/ali",
+                },
+            ],
         )
 
     def test_live_pane_ids_uses_zellij_launch_commands_in_current_tab(self) -> None:
@@ -310,7 +353,7 @@ class GPUFleetLauncherTests(unittest.TestCase):
                 "exited": False,
                 "tab_id": 2,
                 "terminal_command": (
-                    "env GPU_FLEET_PANE=v5:dynamo/worker:main kubectl exec"
+                    "env GPU_FLEET_PANE=v6:gcp:dynamo/worker:main kubectl exec"
                 ),
             },
             {
@@ -319,7 +362,7 @@ class GPUFleetLauncherTests(unittest.TestCase):
                 "exited": False,
                 "tab_id": 2,
                 "terminal_command": (
-                    "env GPU_FLEET_PANE=v5:dynamo/worker:main kubectl exec"
+                    "env GPU_FLEET_PANE=v6:gcp:dynamo/worker:main kubectl exec"
                 ),
             },
             {
@@ -328,7 +371,7 @@ class GPUFleetLauncherTests(unittest.TestCase):
                 "exited": True,
                 "tab_id": 2,
                 "terminal_command": (
-                    "env GPU_FLEET_PANE=v5:dynamo/exited:main kubectl exec"
+                    "env GPU_FLEET_PANE=v6:gcp:dynamo/exited:main kubectl exec"
                 ),
             },
             {
@@ -337,7 +380,7 @@ class GPUFleetLauncherTests(unittest.TestCase):
                 "exited": False,
                 "tab_id": 3,
                 "terminal_command": (
-                    "env GPU_FLEET_PANE=v5:dynamo/other-tab:main kubectl exec"
+                    "env GPU_FLEET_PANE=v6:gcp:dynamo/other-tab:main kubectl exec"
                 ),
             },
         ]
@@ -348,7 +391,7 @@ class GPUFleetLauncherTests(unittest.TestCase):
         ):
             pane_ids = GPU_FLEET.live_pane_ids()
 
-        self.assertEqual(pane_ids, {"v5:dynamo/worker:main": [11, 12]})
+        self.assertEqual(pane_ids, {"v6:gcp:dynamo/worker:main": [11, 12]})
 
     def test_main_spawns_only_the_missing_pane(self) -> None:
         pods = [
@@ -356,6 +399,8 @@ class GPUFleetLauncherTests(unittest.TestCase):
                 "namespace": "dynamo",
                 "name": "worker-a",
                 "container": "main",
+                "context": "gcp",
+                "kubeconfig": "/tmp/kubeconfig",
                 "model": "model-a",
                 "node": "apse8-a0001",
             },
@@ -363,15 +408,16 @@ class GPUFleetLauncherTests(unittest.TestCase):
                 "namespace": "dynamo",
                 "name": "worker-b",
                 "container": "main",
+                "context": "ali",
+                "kubeconfig": "/tmp/kubeconfig",
                 "model": "model-b",
                 "node": "apse8-a0002",
             },
         ]
-        data = {"pods": pods, "kubeconfig": "/tmp/kubeconfig"}
         result = mock.Mock(returncode=0, stderr="")
         with (
             mock.patch.dict(GPU_FLEET.os.environ, {"ZELLIJ": "1"}),
-            mock.patch.object(GPU_FLEET, "fleet", return_value=data),
+            mock.patch.object(GPU_FLEET, "fleet", return_value=pods),
             mock.patch.object(
                 GPU_FLEET,
                 "live_pane_ids",
@@ -397,19 +443,20 @@ class GPUFleetLauncherTests(unittest.TestCase):
             "namespace": "dynamo",
             "name": "worker",
             "container": "main",
+            "context": "gcp",
+            "kubeconfig": "/tmp/kubeconfig",
             "model": "model",
             "node": "apse8-a0001",
         }
-        data = {"pods": [fleet_pod], "kubeconfig": "/tmp/kubeconfig"}
         key = GPU_FLEET.pod_key(fleet_pod)
         result = mock.Mock(returncode=0, stderr="")
         with (
             mock.patch.dict(GPU_FLEET.os.environ, {"ZELLIJ": "1"}),
-            mock.patch.object(GPU_FLEET, "fleet", return_value=data),
+            mock.patch.object(GPU_FLEET, "fleet", return_value=[fleet_pod]),
             mock.patch.object(
                 GPU_FLEET,
                 "live_pane_ids",
-                return_value={key: [41, 42], "v4:dynamo/old-worker:main": [43]},
+                return_value={key: [41, 42], "v5:dynamo/old-worker:main": [43]},
             ),
             mock.patch.object(GPU_FLEET.subprocess, "run", return_value=result) as run,
         ):
@@ -439,16 +486,20 @@ class GPUFleetLauncherTests(unittest.TestCase):
             "namespace": "mp-devenv",
             "name": "sglang-worker",
             "container": "sglang",
+            "context": "ali-apse8-mpdev-1",
+            "kubeconfig": "/tmp/kubeconfig",
             "model": "kimi-k3-sglang-debugging-brendanduke",
             "node": "apse8-a0001",
         }
         command = GPU_FLEET.pane_command(
-            {"kubeconfig": "/tmp/kubeconfig"},
             fleet_pod,
             {"x": "1%", "y": "2%", "width": "90%", "height": "80%"},
         )
 
-        self.assertIn("GPU_FLEET_PANE=v5:mp-devenv/sglang-worker:sglang", command)
+        self.assertIn(
+            "GPU_FLEET_PANE=v6:ali-apse8-mpdev-1:mp-devenv/sglang-worker:sglang",
+            command,
+        )
         self.assertEqual(command[command.index("-c") + 1], "sglang")
         monitor_command = command[-1]
         self.assertIn("command -v nvitop", monitor_command)

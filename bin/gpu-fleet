@@ -4,7 +4,8 @@
 Zellij glue over `b10-gpu fleet` (the Kubernetes-authority fleet query — see
 dotfiles ADR 0001). Each pane runs a GPU monitor in its container via
 `kubectl exec`; no rexec/ssh plumbing is involved, so a GPU container is
-monitorable the moment it is running.
+monitorable the moment it is running. Extra context names passed as arguments
+are queried in addition to the currently selected Kubernetes context.
 
 Incremental reconcile semantics (bind to a key, e.g. tmux-mode F):
   - fleet unchanged vs live panes -> toggle the floating layer (like `f`)
@@ -25,7 +26,7 @@ import sys
 from typing import NoReturn
 
 MARKER = "GPU_FLEET_PANE"  # retained in Zellij's launch command
-PANE_VERSION = 5  # bump when existing panes must be respawned
+PANE_VERSION = 6  # bump when existing panes must be respawned
 MONITOR_COMMAND = """if command -v nvitop >/dev/null 2>&1; then
   exec nvitop
 elif command -v uvx >/dev/null 2>&1; then
@@ -48,21 +49,37 @@ def fail(msg: str) -> NoReturn:
     sys.exit(1)
 
 
-def fleet() -> dict:
-    proc = subprocess.run(
-        ["b10-gpu", "--json", "fleet"], capture_output=True, text=True
-    )
+def query_fleet(context: str | None = None) -> dict:
+    command = ["b10-gpu", "--json"]
+    if context:
+        command.extend(["--context", context])
+    command.append("fleet")
+    proc = subprocess.run(command, capture_output=True, text=True)
     if proc.returncode != 0:
         fail(
-            "fleet query failed:\n"
+            f"fleet query failed{f' for {context}' if context else ''}:\n"
             + proc.stderr.strip()
             + "\n\nlikely fixes: `rcli select` (expired auth) or check kube context"
         )
     return json.loads(proc.stdout)
 
 
+def fleet(extra_contexts: list[str]) -> list[dict]:
+    selected = query_fleet()
+    contexts = [context for context in extra_contexts if context != selected["context"]]
+    results = [selected, *(query_fleet(context) for context in dict.fromkeys(contexts))]
+    return [
+        {**pod, "context": data["context"], "kubeconfig": data["kubeconfig"]}
+        for data in results
+        for pod in data["pods"]
+    ]
+
+
 def pod_key(pod: dict) -> str:
-    return f"v{PANE_VERSION}:{pod['namespace']}/{pod['name']}:{pod['container']}"
+    return (
+        f"v{PANE_VERSION}:{pod['context']}:{pod['namespace']}/"
+        f"{pod['name']}:{pod['container']}"
+    )
 
 
 def live_pane_ids() -> dict[str, list[int]]:
@@ -127,7 +144,7 @@ def short(pod: dict) -> str:
     return label or "dev"
 
 
-def pane_command(data: dict, pod: dict, geo: dict[str, str]) -> list[str]:
+def pane_command(pod: dict, geo: dict[str, str]) -> list[str]:
     namespace = pod["namespace"]
     name = pod["name"]
     container = pod["container"]
@@ -135,11 +152,11 @@ def pane_command(data: dict, pod: dict, geo: dict[str, str]) -> list[str]:
     return [
         "zellij", "run",
         "--floating", "--close-on-exit",
-        "--name", f"nvitop@{short(pod)} [{node.split('-')[-1]}]",
+        "--name", f"nvitop@{short(pod)} [{pod['context']}/{node.split('-')[-1]}]",
         "-x", geo["x"], "-y", geo["y"],
         "--width", geo["width"], "--height", geo["height"],
         "--",
-        "env", f"{MARKER}={pod_key(pod)}", f"KUBECONFIG={data['kubeconfig']}",
+        "env", f"{MARKER}={pod_key(pod)}", f"KUBECONFIG={pod['kubeconfig']}",
         "kubectl", "exec", "-it", "-n", namespace, name, "-c", container,
         "--", "sh", "-lc", MONITOR_COMMAND,
     ]
@@ -148,13 +165,9 @@ def pane_command(data: dict, pod: dict, geo: dict[str, str]) -> list[str]:
 def main() -> None:
     if not os.environ.get("ZELLIJ"):
         sys.exit("gpu-fleet must run inside a Zellij session")
-    data = fleet()
-    pods = data["pods"]
+    pods = fleet(sys.argv[1:])
     if not pods:
-        fail(
-            f"no running GPU containers owned by {data['owner']!r} in "
-            f"{', '.join(data['namespaces'])}"
-        )
+        fail("no running owned GPU containers found in the selected or extra contexts")
 
     desired_panes = {
         pod_key(pod): (pod, geo) for pod, geo in zip(pods, geometry(len(pods)))
@@ -210,7 +223,7 @@ def main() -> None:
     for key, (pod, geo) in desired_panes.items():
         if key not in missing_keys:
             continue
-        cmd = pane_command(data, pod, geo)
+        cmd = pane_command(pod, geo)
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             fail(f"zellij run failed for {pod_key(pod)}:\n{proc.stderr.strip()}")

@@ -257,7 +257,7 @@ keybinds clear-defaults=true {
         bind "8" { GoToTab 8; SwitchToMode "locked"; }
         bind "9" { GoToTab 9; SwitchToMode "locked"; }
         bind "F" {
-            Run "gpu-fleet" {
+            Run "gpu-fleet" "ali-apse8-mpdev-1" {
                 floating true
                 hold_on_close false
                 x "30%"
