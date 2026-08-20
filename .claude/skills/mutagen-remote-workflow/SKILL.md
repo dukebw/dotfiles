@@ -10,6 +10,18 @@ Use this skill when working with the dotfiles `r`/`rexec` workflow.
 The current workflow targets Kubernetes dev and tooling pods, not Coder workspaces.
 Do not put private SSH keys, GitHub tokens, or kubeconfig files on the pod.
 
+## Related Skills
+
+Before selecting or using GPUs on an MP dev pod, load the
+`gpu-reservation-api` skill. Reserve the required GPUs, set
+`CUDA_VISIBLE_DEVICES` to the reserved indexes, and release the reservation
+when the work finishes. Use `kubernetes-gpu-capacity` as a complementary view
+of Kubernetes allocations; capacity does not replace a dashboard reservation.
+
+Load `dashboard-node-lifecycle` only when adding, retiring, or querying nodes
+in the dev GPU dashboard. Load `dashboard-ui-conventions` only when changing
+the dashboard UI; it is not part of normal dev-pod usage.
+
 ## Architecture
 
 ```text
