@@ -108,6 +108,9 @@ registry default. Tooling can provide both `REXEC_LOCAL_ROOT` and
 `REXEC_WORKDIR` for a config-free one-off invocation. See
 [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md) for architecture
 diagrams, setup, security model, config shape, and troubleshooting.
+For MP GPU dev pods, that guide hands pod deployment and lifecycle off to the
+canonical `~/work/b10-benchmarks/gpu-dev/runbooks/devenv/README.md` runbook and
+uses `/node-storage/rexec/<repo>` for the disposable Mutagen replica.
 
 For CUDA editing, Neovim routes matching buffers to `clangd-18` in a dedicated
 CPU-only Kubernetes pod built from the pinned TRT-LLM CUDA image. See

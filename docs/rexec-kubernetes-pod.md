@@ -50,7 +50,7 @@ Mutagen flush
   |
   | 2. one-way-replica sync
   v
-/workspace/<repo> in pod
+/node-storage/rexec/<repo> in MP dev pod
   |
   | 3. ssh command through kubectl port-forward
   v
@@ -112,11 +112,51 @@ The dev pod must support:
 - `kubectl exec`
 - `apt-get`, used by `rexec --setup` to install `openssh-server` if missing
 - root or enough permissions to write `/root/.ssh/authorized_keys`
-- a stable filesystem path for the remote workdir, usually under `/workspace`
+- a stable filesystem path for the remote workdir
 
 GPU dev pods satisfy these requirements through the existing runbooks. The
 CPU-only remote clangd pod is defined in
 `kubernetes/remote-clangd-statefulset.yaml`.
+
+## MP Dev Pods
+
+The canonical MP dev-pod deployment, storage, and lifecycle runbook is:
+
+```text
+~/work/b10-benchmarks/gpu-dev/runbooks/devenv/README.md
+```
+
+Read its current cluster-specific instructions before creating, moving,
+scaling, or deleting a pod. In summary, the rexec handoff starts only after the
+runbook has produced a Running pod:
+
+```text
+select the workload plane context -> check GPU capacity -> make deploy
+    -> discover the generated pod name -> register it in rexec -> setup
+```
+
+Use `rcli sync --provider rancher` and `rcli select --provider rancher` when
+the workload plane kubeconfig is not already available, then verify the context
+against the cluster directory's `Makefile`. Check capacity before deployment
+and coordinate GPU use in the Slack channel linked by the runbook.
+
+For deployments created for Brendan, set a short `$USER` containing the exact
+contiguous segment `-debugging-brendanduke`, such as
+`mp-debugging-brendanduke`, and verify every generated pod name contains both
+`debugging` and `brendanduke`. Discover the pod from Kubernetes rather than
+hard-coding its architecture-specific suffix.
+
+MP dev pods have two storage tiers relevant to rexec:
+
+- `/node-storage` is fast node-local NVMe and intentionally disposable. Put
+  the Mutagen replica at `/node-storage/rexec/<worktree>` because the local
+  worktree is authoritative and rexec can repopulate it after node loss.
+- `/root` is persistent JuiceFS. Keep remote-only durable state there, outside
+  the one-way Mutagen replica. Its small-file latency makes it a poor default
+  for synced repositories and build trees.
+
+Dedicated tooling pods may still use a manifest-provided `/workspace` volume;
+this recommendation applies specifically to MP dev pods.
 
 ## Configuration
 
@@ -143,6 +183,8 @@ pods:
     ssh_local_port: 22222
   clangd:
     pod: remote-clangd-debugging-brendanduke-0
+    kubeconfig: ~/.rcli/kubeconfig/rancher/ali-apse7-mpdev-1.yaml
+    namespace: mp-devenv
     ssh_alias: baseten-remote-clangd-pod
     ssh_local_port: 22230
   21ca:
@@ -160,7 +202,7 @@ validates unique ports and unique aliases and fails loud on conflicts.
 Worktree sync config:
 
 ```yaml
-remote_workdir: /workspace/fresh_glm5.2/baseten-dspark
+remote_workdir: /node-storage/rexec/baseten-dspark
 # local_root defaults to the directory containing this file.
 
 ignore:
@@ -383,14 +425,18 @@ rexec-docker-pull --login baseten/private-image:tag
 If the pod restarts, run `rexec --setup` again. The private key remains local;
 the pod only gets the public key again.
 
-If the pod came back with a fresh disk (for example after `b10-gpu move` to
-another node), Mutagen sees the previously populated remote root reappear empty
-and safety-halts the session (`Halted due to one-sided root emptying`).
+If the pod came back with a fresh disk (for example after an MP dev-pod node
+move), follow the canonical dev-pod runbook to recreate the pod and
+node-storage PVC. Mutagen then sees the previously populated remote root
+reappear empty and safety-halts the session
+(`Halted due to one-sided root emptying`).
 `rexec --setup`, `rexec --flush`, and `r` detect this signature — session
 halted, local side populated, remote side empty — and automatically run
 `mutagen sync reset` to re-push from local. Use `rexec --setup --flush` to
 block until the re-push completes. Sessions whose *local* side is empty are
 never auto-reset, because one-way-replica mode would wipe the pod-side copy.
+The pod's JuiceFS-backed `/root` survives; only the disposable Mutagen replica
+under `/node-storage` needs to be repopulated.
 
 If the port-forward dies, the next `rexec`/`r` invocation starts it again.
 
@@ -496,6 +542,13 @@ Check `remote_workdir` in the resolved rexec config. `rexec` always runs:
 cd <remote_workdir> && <command>
 ```
 
+### SSH asks for a password on an MP dev pod
+
+JuiceFS homes created by older chart versions may have made `/root`
+world-writable, causing sshd `StrictModes` to ignore `authorized_keys`.
+`rexec --setup` corrects `/root` to mode 755 before starting sshd; rerun setup
+after a pod recreation.
+
 ### Need to pass a short-lived secret for one command
 
 Pipe secrets over stdin or environment for that command only. Do not write
@@ -525,3 +578,4 @@ DOCKER_BUILDKIT=1 docker build --secret id=github_token,env=GITHUB_TOKEN .
 | `r` wraps `rexec --flush` | The common command does the safe thing by default. |
 | Global pod registry, sync-only worktree configs | Ports/aliases are machine-global resources; declaring them per worktree allowed silent conflicts and ssh-block clobbering. See ADR 0002. |
 | Derived mutagen session names | One session per (worktree, pod) with zero config lines; scales to one worktree synced to N pods (disaggregated serving). |
+| Node-local replica on MP dev pods | Local files are authoritative, so `/node-storage` gives fast syncs and builds while rexec safely recovers after node loss; persistent remote-only state remains outside the replica in `/root`. |

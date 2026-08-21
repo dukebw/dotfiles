@@ -697,8 +697,8 @@ def mutagen_session_state(name: str) -> dict[str, Any] | None:
     }
 
 
-# Safety halts produced by a recreated (empty) pod-side root, e.g. after
-# `b10-gpu move` lands the pod on a node with a fresh /workspace.
+# Safety halts produced when a recreated pod-side workdir is empty, such as
+# node-local `/node-storage` after an MP dev pod moves to another node.
 REPAIRABLE_HALTS = (
     "Halted due to one-sided root emptying",
     "Halted due to root deletion",
