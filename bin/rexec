@@ -399,6 +399,7 @@ if ! command -v sshd >/dev/null 2>&1; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server
 fi
+chmod 755 /root
 mkdir -p /root/.ssh /run/sshd
 chmod 700 /root/.ssh
 touch /root/.ssh/authorized_keys

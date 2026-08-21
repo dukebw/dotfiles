@@ -110,7 +110,7 @@ registry default. Tooling can provide both `REXEC_LOCAL_ROOT` and
 diagrams, setup, security model, config shape, and troubleshooting.
 
 For CUDA editing, Neovim routes matching buffers to `clangd-18` in a dedicated
-CPU-only Vultr pod built from the pinned TRT-LLM CUDA image. See
+CPU-only Kubernetes pod built from the pinned TRT-LLM CUDA image. See
 [`docs/remote-clangd.md`](docs/remote-clangd.md) for flow diagrams, reconnect
 behavior, and headless verification commands.
 

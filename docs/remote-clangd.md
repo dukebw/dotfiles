@@ -18,12 +18,12 @@ the pinned TRT-LLM CUDA 13.1 image and maps local paths to remote paths.
 | Stdio bridge | `~/.local/bin/remote-clangd` | Starts remote `clangd` over SSH with path mappings and either a project or fallback compilation database. Source: `~/dotfiles/bin/remote-clangd`. |
 | Headless checker | `~/.local/bin/check-remote-clangd-nvim` | Tests real Neovim config and remote diagnostics. Source: `~/dotfiles/bin/check-remote-clangd-nvim`. |
 | SSH/sync substrate | `rexec`, `~/.config/rexec/pods.yaml`, `.rexec.yaml` | Keeps the pod SSH shim, port-forward, and Mutagen sync alive. |
-| Kubernetes manifest | `~/dotfiles/kubernetes/remote-clangd-statefulset.yaml` | Runs the CPU-only Vultr pod with the pinned TRT-LLM image and Clang 18. |
+| Kubernetes manifest | `~/dotfiles/kubernetes/remote-clangd-statefulset.yaml` | Runs a CPU-only pod in `ali-apse7-mpdev-1` with the pinned TRT-LLM image and Clang 18. |
 
 The Neovim config is managed separately from this dotfiles repo at
 `~/.config/nvim` / `dukebw/kickstart.nvim`. This document records the workflow
 and operational model in dotfiles because it depends on `rexec`, SSH, and the
-Vultr tooling pod.
+Kubernetes tooling pod.
 
 `~/dotfiles/install.sh` symlinks the dotfiles copies of `remote-clangd` and
 `check-remote-clangd-nvim` into `~/.local/bin`.
@@ -305,7 +305,7 @@ REXEC_POD=clangd REXEC_LOCAL_ROOT=~/work/<repo> REXEC_WORKDIR=/workspace/<repo> 
 If the pod is missing or its image changed, reapply the checked-in manifest:
 
 ```bash
-KUBECONFIG=~/.rcli/kubeconfig/rancher/vultr-us-sea-prod-1.yaml \
+KUBECONFIG=~/.rcli/kubeconfig/rancher/ali-apse7-mpdev-1.yaml \
   kubectl apply -f ~/dotfiles/kubernetes/remote-clangd-statefulset.yaml
 ```
 

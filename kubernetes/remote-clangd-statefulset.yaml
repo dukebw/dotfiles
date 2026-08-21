@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: remote-clangd-debugging-brendanduke
-  namespace: baseten
+  namespace: mp-devenv
   labels:
     app.kubernetes.io/name: remote-clangd
     app.kubernetes.io/instance: remote-clangd-debugging-brendanduke
@@ -18,8 +18,13 @@ spec:
         app.kubernetes.io/name: remote-clangd
         app.kubernetes.io/instance: remote-clangd-debugging-brendanduke
     spec:
-      nodeSelector:
-        vke.vultr.com/node-pool: vultr-us-sea-prod-1-essential
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: baseten.co/gpu-type
+                    operator: DoesNotExist
       terminationGracePeriodSeconds: 10
       containers:
         - name: remote-clangd
