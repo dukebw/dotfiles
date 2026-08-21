@@ -140,8 +140,12 @@ Mutagen session names are always derived:
 `<root-basename>-<8-char-root-hash>-<podkey>` (e.g.
 `baseten-dspark-1a2b3c4d-21ca`); the full-root hash prevents nested repositories
 with the same basename in different worktrees from colliding. Sessions
-auto-create on first flush. A legacy `<root-basename>-<podkey>` session is
-reused only when both endpoints exactly match the resolved worktree config.
+auto-create on first flush. An existing derived session is reused only when its
+endpoints exactly match the resolved config; a drifted session (e.g. after a
+`remote_workdir` change) fails loud with the `mutagen sync terminate`
+remediation instead of flushing to the stale remote path. A legacy
+`<root-basename>-<podkey>` session is reused only when both endpoints exactly
+match the resolved worktree config.
 
 Pod selection precedence: `-p/--pod <key>` flag, then `$REXEC_POD`, then the
 registry `default:`. Worktree config discovery: `--config`, `REXEC_CONFIG`,

@@ -651,15 +651,6 @@ def ensure_remote_workdir(cfg: dict[str, Any]) -> None:
     run(["ssh", cfg["ssh_alias"], "mkdir", "-p", cfg["remote_workdir"]], quiet=True)
 
 
-def mutagen_session_exists(name: str) -> bool:
-    return subprocess.run(
-        ["mutagen", "sync", "list", name],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    ).returncode == 0
-
-
 def mutagen_session_state(name: str) -> dict[str, Any] | None:
     """Parse `mutagen sync list` output into the status plus per-side file counts."""
     result = subprocess.run(
@@ -750,15 +741,31 @@ def repair_halted_mutagen_session(cfg: dict[str, Any], *, warn_unrepairable: boo
 
 def ensure_mutagen_session(cfg: dict[str, Any]) -> None:
     name = cfg["mutagen_session"]
-    if mutagen_session_exists(name):
+    expected_alpha = str(Path(cfg["local_root"]).resolve())
+    expected_beta = f"{cfg['ssh_alias']}:{cfg['remote_workdir']}"
+
+    state = mutagen_session_state(name)
+    if state is not None:
+        # A derived-name session with drifted endpoints means remote_workdir
+        # changed underneath it; reusing it would flush to a path callers no
+        # longer read, so fail with the remediation instead.
+        if state["alpha_url"] != expected_alpha or state["beta_url"] != expected_beta:
+            raise SystemExit(
+                f"Mutagen session {name} already exists with different endpoints:\n"
+                f"  session: {state['alpha_url']} -> {state['beta_url']}\n"
+                f"  config:  {expected_alpha} -> {expected_beta}\n"
+                "The session name derives from the local root and pod key, so the "
+                "session is stale (remote_workdir changed underneath it). Either:\n"
+                f"  1. Terminate it and re-run to re-sync (remote files are kept):\n"
+                f"     mutagen sync terminate {name}\n"
+                "  2. Or point remote_workdir back at the session's beta."
+            )
         repair_halted_mutagen_session(cfg)
         return
 
     legacy_name = cfg["legacy_mutagen_session"]
     legacy_state = mutagen_session_state(legacy_name)
     if legacy_state is not None:
-        expected_alpha = str(Path(cfg["local_root"]).resolve())
-        expected_beta = f"{cfg['ssh_alias']}:{cfg['remote_workdir']}"
         if (
             legacy_state["alpha_url"] == expected_alpha
             and legacy_state["beta_url"] == expected_beta

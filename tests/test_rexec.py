@@ -48,18 +48,19 @@ class MutagenSessionNameTests(unittest.TestCase):
 
     @mock.patch.object(REXEC, "repair_halted_mutagen_session")
     @mock.patch.object(REXEC, "mutagen_session_state")
-    @mock.patch.object(REXEC, "mutagen_session_exists", return_value=False)
     def test_matching_legacy_session_is_reused(
         self,
-        _exists: mock.Mock,
         session_state: mock.Mock,
         repair: mock.Mock,
     ) -> None:
-        session_state.return_value = {
+        legacy_state = {
             "status": "Watching for changes",
             "alpha_url": "/Users/example/work/baseten",
             "beta_url": "example-pod:/workspace/baseten",
         }
+        session_state.side_effect = lambda name: (
+            legacy_state if name == "baseten-clangd" else None
+        )
         config = {
             "local_root": "/Users/example/work/baseten",
             "remote_workdir": "/workspace/baseten",
@@ -76,18 +77,19 @@ class MutagenSessionNameTests(unittest.TestCase):
 
     @mock.patch.object(REXEC, "run")
     @mock.patch.object(REXEC, "mutagen_session_state")
-    @mock.patch.object(REXEC, "mutagen_session_exists", return_value=False)
     def test_colliding_legacy_session_creates_hashed_session(
         self,
-        _exists: mock.Mock,
         session_state: mock.Mock,
         run: mock.Mock,
     ) -> None:
-        session_state.return_value = {
+        legacy_state = {
             "status": "Watching for changes",
             "alpha_url": "/Users/example/work/other/mp/project/trt-llm",
             "beta_url": "example-pod:/workspace/other/mp/project/trt-llm",
         }
+        session_state.side_effect = lambda name: (
+            legacy_state if name == "trt-llm-clangd" else None
+        )
         config = {
             "local_root": "/Users/example/work/baseten/mp/project/trt-llm",
             "remote_workdir": "/workspace/baseten/mp/project/trt-llm",
@@ -104,6 +106,66 @@ class MutagenSessionNameTests(unittest.TestCase):
         self.assertEqual(config["mutagen_session"], "trt-llm-12345678-clangd")
         self.assertEqual(create_command[0:3], ["mutagen", "sync", "create"])
         self.assertIn("trt-llm-12345678-clangd", create_command)
+
+    @mock.patch.object(REXEC, "repair_halted_mutagen_session")
+    @mock.patch.object(REXEC, "mutagen_session_state")
+    def test_existing_session_with_matching_endpoints_is_reused(
+        self,
+        session_state: mock.Mock,
+        repair: mock.Mock,
+    ) -> None:
+        session_state.return_value = {
+            "status": "Watching for changes",
+            "alpha_url": "/Users/example/work/baseten/mp/project/trt-llm",
+            "beta_url": "example-pod:/workspace/baseten/mp/project/trt-llm",
+        }
+        config = {
+            "local_root": "/Users/example/work/baseten/mp/project/trt-llm",
+            "remote_workdir": "/workspace/baseten/mp/project/trt-llm",
+            "ssh_alias": "example-pod",
+            "mutagen_session": "trt-llm-12345678-clangd",
+            "legacy_mutagen_session": "trt-llm-clangd",
+        }
+
+        with mock.patch.object(REXEC, "eprint"):
+            REXEC.ensure_mutagen_session(config)
+
+        self.assertEqual(config["mutagen_session"], "trt-llm-12345678-clangd")
+        repair.assert_called_once_with(config)
+
+    @mock.patch.object(REXEC, "run")
+    @mock.patch.object(REXEC, "repair_halted_mutagen_session")
+    @mock.patch.object(REXEC, "mutagen_session_state")
+    def test_existing_session_with_drifted_endpoints_fails_loud(
+        self,
+        session_state: mock.Mock,
+        repair: mock.Mock,
+        run: mock.Mock,
+    ) -> None:
+        session_state.return_value = {
+            "status": "Watching for changes",
+            "alpha_url": "/Users/example/work/baseten/mp/project/trt-llm",
+            "beta_url": "example-pod:/workspace/stale-trt-llm",
+        }
+        config = {
+            "local_root": "/Users/example/work/baseten/mp/project/trt-llm",
+            "remote_workdir": "/workspace/baseten/mp/project/trt-llm",
+            "ssh_alias": "example-pod",
+            "mutagen_session": "trt-llm-12345678-clangd",
+            "legacy_mutagen_session": "trt-llm-clangd",
+        }
+
+        with mock.patch.object(REXEC, "eprint"):
+            with self.assertRaises(SystemExit) as ctx:
+                REXEC.ensure_mutagen_session(config)
+
+        message = str(ctx.exception.code)
+        self.assertIn("trt-llm-12345678-clangd", message)
+        self.assertIn("example-pod:/workspace/stale-trt-llm", message)
+        self.assertIn("example-pod:/workspace/baseten/mp/project/trt-llm", message)
+        self.assertIn("mutagen sync terminate trt-llm-12345678-clangd", message)
+        repair.assert_not_called()
+        run.assert_not_called()
 
     @mock.patch.object(REXEC.subprocess, "run")
     def test_session_state_parses_sync_endpoints(self, run: mock.Mock) -> None:

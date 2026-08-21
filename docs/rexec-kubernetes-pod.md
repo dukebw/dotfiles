@@ -261,6 +261,11 @@ same-named nested repository is not reused; rexec creates the hashed session,
 which prevents worktrees containing repeated names such as `trt-llm` from
 colliding.
 
+A hashed session whose endpoints no longer match the resolved config — e.g.
+after `remote_workdir` changes underneath it — is never silently reused: rexec
+fails with the session's current endpoints and the `mutagen sync terminate
+<name>` remediation instead of flushing to the stale remote path.
+
 The managed SSH block holds one Host entry per registry pod:
 
 ```sshconfig
