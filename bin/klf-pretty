@@ -298,6 +298,9 @@ class Renderer:
 
 
 def main() -> int:
+    # Multi-rank containers interleave writes mid-character, so the stream is
+    # not guaranteed to be valid UTF-8; replace bad bytes instead of dying.
+    sys.stdin.reconfigure(errors="replace")
     renderer = Renderer()
     for line in sys.stdin:
         print(renderer.render(parse_record(line.rstrip("\n"))), flush=True)
