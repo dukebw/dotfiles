@@ -2,7 +2,6 @@
 name: chinese-vocab
 description: 從 Zoom 聊天記錄或詞彙列表建立中文詞彙填空卡片 (Cloze cards)。Use when the user wants to create Anki flashcards from Chinese vocabulary lists or chat logs.
 argument-hint: "[vocab-file] [--dry-run]"
-disable-model-invocation: true
 ---
 
 # 中文詞彙 Anki 卡片製作器
@@ -94,16 +93,16 @@ disable-model-invocation: true
 
 ### 3. 搜尋例句 (直接用當前 harness 的搜尋/擷取工具)
 
-使用當前執行環境可用的搜尋與擷取工具直接搜尋例句。**優先使用搜尋引擎做 discovery**，再抓命中的原文；網站內搜尋頁或直接已知來源 URL 是 fallback。**不要使用 Agent/Task 子代理**——直接呼叫工具更快、更可靠。
+使用當前執行環境可用的搜尋與擷取工具直接搜尋例句。**依工具能力選路徑，不要按 harness 名稱假定搜尋能力。** **不要使用 Agent/Task 子代理**——直接呼叫工具更快、更可靠。
 
-* Claude Code harness：使用 `WebSearch` + `WebFetch`
-* OpenCode harness：優先使用 `webfetch` 擷取搜尋引擎結果頁；若沒有專用搜尋工具或被擋，再用網站內搜尋頁或直接已知來源 URL
+* **Discovery**：優先使用專用搜尋工具（如 `websearch` 或 `WebSearch`）找文章 URL。工具不存在或搜尋失敗時，改用網站內搜尋頁或直接來源導覽。
+* **原文擷取**：用擷取工具（如 `webfetch` 或 `WebFetch`）讀取命中的文章。搜尋摘要只用於 discovery；卡片例句仍須來自原文，並寫入 Source Evidence Ledger。
 
 在第一輪搜尋前，先做一個**preflight 預檢**：
 
-* 測試當前 harness 是否真的能穩定使用搜尋引擎結果頁
+* 確認專用搜尋工具是否可用，並以一個目標詞測試 discovery
 * 測試 2-3 個目標來源網站是否可直接擷取內文
-* 若搜尋引擎結果頁被 challenge / 403 / 空白頁，**立刻切換**到站內搜尋頁與直接來源導覽，不要硬耗回合
+* 若當前搜尋路徑回傳 challenge / 403 / 空白頁，**立刻切換**到站內搜尋頁與直接來源導覽，不要硬耗回合
 * 為每個詞建立一個**搜尋封包 (search packet)**：`原始詞`、`搜尋別名`、`相鄰上下文`、`相鄰英文 gloss`、`主題群組`、`優先來源家族`
 * 預檢後先聲明可用路徑，例如：`search_engine_ok` / `site_search_ok` / `direct_fetch_ok`
 
@@ -116,12 +115,9 @@ disable-model-invocation: true
 每批發送 10 個並行的搜尋呼叫。搜尋策略：
 
 ```
-搜尋查詢格式（依 harness 調整）：
+搜尋查詢格式（依工具能力調整）：
 - 查詢："目標詞" 相關關鍵字
-- allowed_domains: ["cna.com.tw", "udn.com", "ltn.com.tw"] （依輪替指定）
-
-Claude Code：直接用 WebSearch
-OpenCode：優先用 webfetch 擷取搜尋引擎結果頁；若沒有專用 WebSearch 或被擋，再用目標網站搜尋頁，再挑選文章 URL
+- 網域限制：使用工具支援的網域篩選（依來源輪替指定）；不支援時改用 site:domain
 ```
 
 **查詢階梯 (QUERY LADDER)：不要在第一個弱查詢失敗後就放棄**
@@ -239,7 +235,7 @@ OpenCode webfetch:
 搜尋和擷取的節奏：
 1. **第一輪**：按主題分組搜尋 → 擷取 → 寫入 ledger → 清點已覆蓋的詞語
 2. **第二輪**：針對未覆蓋的詞語重新搜尋（換網站/換查詢詞）→ 擷取 → 寫入 ledger
-3. **第三輪**（如需要）：放寬搜尋條件（移除 `allowed_domains` 限制）
+3. **第三輪**（如需要）：放寬搜尋條件（移除網域篩選或 `site:domain` 限制）
 
 **LOW-HIT PROTOCOL（低命中詞強制流程）**
 
@@ -348,47 +344,15 @@ ledger 驗證通過後，執行時不加 --dry-run 即可將卡片加入 Anki。
 
 ## 若 DRY_RUN=false：加入 Anki
 
-需求：Anki 正在執行，並安裝了 AnkiConnect 附加元件 (代碼：2055492159)
-
 加入前必須重新讀取 Source Evidence Ledger，確認每張卡片都有 `url`、`verbatim_sentences`、`card_front`，且 `註記` 包含完整 URL。
 
-```python
-#!/usr/bin/env python3
-"""Uses only stdlib (no pip dependencies required)."""
-import json
-import urllib.request
+Call the Skill tool with "anki-connect". 使用以下卡片與設定執行該 skill：
 
-CARDS = [
-    # 從 Source Evidence Ledger 填充；不要從對話記憶或 WebFetch 摘要填充
-    # ("front_with_cloze", "back_notes"),
-]
+* 卡片：從 ledger 組裝、通過品質閘門的 `(front, back)` pairs
+* Deck：`hanzi`；model：`克漏題`；fields：`文字`、`註記`；tag：`claude-vocab`
+* 授權：使用者是否已要求加入 Anki；交由該 skill 的 Authorization 規則判定能否寫入
 
-def anki_request(action, **params):
-    payload = json.dumps({"action": action, "version": 6, "params": params})
-    req = urllib.request.Request("http://localhost:8765", data=payload.encode())
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
-    if result.get("error"):
-        raise Exception(f"{action}: {result['error']}")
-    return result["result"]
-
-added = errors = 0
-for i, (front, back) in enumerate(CARDS, 1):
-    try:
-        nid = anki_request("addNote", note={
-            "deckName": "hanzi", "modelName": "克漏題",
-            "fields": {"文字": front, "註記": back},
-            "options": {"allowDuplicate": False},
-            "tags": ["claude-vocab"]
-        })
-        print(f"[{i}/{len(CARDS)}] Added (id={nid})")
-        added += 1
-    except Exception as e:
-        print(f"[{i}/{len(CARDS)}] ERROR: {e}")
-        errors += 1
-
-print(f"\n✓ Added {added} cards to hanzi deck ({errors} errors)")
-```
+Anki 的連線、deck/model/fields 預檢、插入與錯誤處理由 `anki-connect` 負責；本 skill 保留例句證據與卡片品質的驗證。
 
 ---
 

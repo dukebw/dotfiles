@@ -2,12 +2,18 @@
 name: anki-connect
 description: Add cloze or basic notes to Anki through the local AnkiConnect HTTP API with deck/model/field preflight checks. Use when adding Anki cards, using AnkiConnect, validating Anki deck/model fields, or when another skill has already produced card front/back content.
 argument-hint: "[--dry-run] [deck] [model]"
-disable-model-invocation: true
 ---
 
 # AnkiConnect
 
 Add prepared cards to Anki through AnkiConnect. This skill owns the generic Anki insertion workflow only; domain skills own card content and quality rules.
+
+## Authorization
+
+Add notes only when the user has requested insertion, directly or through the
+calling workflow. Loading this skill or receiving prepared cards is not write
+authorization. If insertion was not requested, preview the cards and ask before
+calling `addNote`. Dry-run always takes precedence and makes no AnkiConnect calls.
 
 ## Requirements
 
