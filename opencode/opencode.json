@@ -10,6 +10,19 @@
       "oauth": {}
     }
   },
+  "providers": {
+    "baseten": {
+      "models": {
+        "moonshotai/Kimi-K3": {
+          "limit": {
+            "context": 1048576,
+            "input": 900000,
+            "output": 131072
+          }
+        }
+      }
+    }
+  },
   "provider": {
     "openai": {
       "models": {
