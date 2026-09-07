@@ -93,6 +93,25 @@ mkdir -p "$HOME/.claude"
 backup_and_link "$DOTFILES_DIR/claude/settings.json" "$HOME/.claude/settings.json"
 
 mkdir -p "$HOME/.claude/skills"
+
+# Retire the manually installed collection without deleting its source checkout.
+python3 - <<'PY'
+from pathlib import Path
+
+home = Path.home()
+retired = home / "work/skills"
+for relative in (".agents/skills", ".claude/skills", ".config/opencode/skills"):
+    root = home / relative
+    if root.is_symlink() and root.resolve(strict=False).is_relative_to(retired):
+        root.unlink()
+        continue
+    if not root.is_dir():
+        continue
+    for entry in root.iterdir():
+        if entry.is_symlink() and entry.resolve(strict=False).is_relative_to(retired):
+            entry.unlink()
+PY
+
 for skill_dir in "$DOTFILES_DIR/.claude/skills"/*; do
     if [ -d "$skill_dir" ]; then
         skill_name=$(basename "$skill_dir")
