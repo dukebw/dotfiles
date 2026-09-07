@@ -19,15 +19,15 @@ readonly opencode_bin="$HOME/.local/bin/opencode"
 
 export OPENCODE_DISABLE_FFF=1
 export OPENCODE_DISABLE_AUTOUPDATE=1
-export OPENCODE_SERVER_PASSWORD
-OPENCODE_SERVER_PASSWORD=$(
-  /usr/bin/security find-generic-password \
-    -a "opencode-server" \
-    -s "ai.opencode.web" \
-    -w
-)
 
-exec /usr/bin/caffeinate -i \
-  "$opencode_bin" serve \
-  --hostname 127.0.0.1 \
-  --port 4096
+[[ "$("$opencode_bin" service get hostname)" == "127.0.0.1" &&
+   "$("$opencode_bin" service get port)" == "4096" ]] || {
+  print -u2 "Configure the OpenCode service hostname as 127.0.0.1 and port as 4096"
+  exit 1
+}
+
+/usr/bin/caffeinate -i -w $$ &
+while true; do
+  "$opencode_bin" service start >/dev/null
+  sleep 30
+done

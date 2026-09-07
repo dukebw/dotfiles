@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 readonly package="@opencode-ai/cli"
-readonly channel="next"
+readonly channel="beta"
 readonly root="$HOME/.local/share/opencode2"
 readonly versions_dir="$root/versions"
 readonly current_link="$root/current"
@@ -160,13 +160,13 @@ fi
 
 if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
   log "Restarting the OpenCode server"
-  launchctl kickstart -k "$service"
-  if ! wait_for_health; then
+  if ! "$HOME/.local/bin/opencode" service restart >/dev/null || ! wait_for_health; then
     if [[ -n "$previous_target" && -x "$root/$previous_target/bin/opencode2" ]]; then
       log "OpenCode $latest failed health checks; rolling back"
       activate "$previous_target"
-      launchctl kickstart -k "$service"
-      wait_for_health || log "OpenCode rollback failed health checks"
+      if ! "$HOME/.local/bin/opencode" service restart >/dev/null || ! wait_for_health; then
+        log "OpenCode rollback failed health checks"
+      fi
     else
       log "OpenCode $latest failed health checks and no rollback is available"
     fi

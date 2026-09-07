@@ -15,9 +15,9 @@ Phone browser
     | authenticated private HTTPS request over Tailscale
 Tailscale Serve
     | http://127.0.0.1:4096
-OpenCode 2 embedded web UI and API, supervised by launchd
+One native OpenCode 2 managed service: embedded web UI and API
     | repository and shell tools on the Mac
-Laptop TUI clients using `opencode --server`
+Laptop TUI and API clients using normal service discovery
 
 Generated static artifact
     | authenticated publication from the Baseten Tailnet
@@ -28,9 +28,11 @@ here-now
 ## Security invariants
 
 - Bind OpenCode only to `127.0.0.1:4096`.
-- Keep HTTP Basic authentication enabled through `OPENCODE_SERVER_PASSWORD`.
-- Store the password only in macOS Keychain. Never print it, pass it as a
-  command argument, write it to a plist or environment file, or commit it.
+- Tailscale is the remote access boundary. Keep native service authentication
+  enabled for client compatibility; Keychain-only password storage is not required.
+- Native credentials may live in OpenCode's local service configuration and
+  registration files, both mode `0600`. Keep credentials out of agent output,
+  command arguments, plists, environment files, and Git.
 - Use `tailscale serve`, never `tailscale funnel`. Funnel is public.
 - Keep generated reports self-contained and free of credentials, customer
   secrets, shell tokens, active scripts, or data requiring narrower access.
@@ -40,8 +42,10 @@ here-now
   API contract rather than a copied endpoint.
 - Do not commit the Tailscale URL, IPs, account email, device names, auth keys,
   certificates, logs, or process state.
-- Run service restarts from an independent Terminal. Restarting the server
-  disconnects agents currently using that server.
+- Run service restarts from an independent process or Terminal. For a phone-only
+  migration, arm an independent rollback watchdog before cutover and verify
+  authenticated web UI/API access through Tailscale before committing the change.
+  Restarting the server disconnects agents currently using that server.
 
 ## Files and state
 
@@ -50,7 +54,7 @@ here-now
 | OpenCode shim | `~/dotfiles/bin/opencode` | `~/.local/bin/opencode` |
 | MCP compatibility bridge | `~/dotfiles/bin/opencode-mcp-remote` | `~/.local/bin/opencode-mcp-remote` |
 | Version updater | `~/dotfiles/bin/opencode-update` | `~/.local/bin/opencode-update` |
-| Server wrapper | `~/dotfiles/bin/opencode-web-server` | `~/.local/bin/opencode-web-server` |
+| Service availability monitor | `~/dotfiles/bin/opencode-web-server` | `~/.local/bin/opencode-web-server` |
 | LaunchAgent | `~/dotfiles/launchd/ai.opencode.web.plist` | `~/Library/LaunchAgents/ai.opencode.web.plist` |
 | Update LaunchAgent | `~/dotfiles/launchd/ai.opencode.update.plist` | `~/Library/LaunchAgents/ai.opencode.update.plist` |
 | here-now publisher | `~/dotfiles/bin/here-now-publish` | `~/.local/bin/here-now-publish` |
@@ -65,10 +69,11 @@ migrated into it and is retired). OpenCode itself writes `cli.json` via
 tmp+rename, which replaces the symlink with a plain file — when `cli.json`
 edits stop appearing in `git status`, re-run `install.sh` to restore the link.
 
-The password is a local Keychain generic-password item:
-
-- Service: `ai.opencode.web`
-- Account: `opencode-server`
+Native service settings, including the persistent password, live in
+`~/.config/opencode/service.json`. Discovery and client authentication use
+`~/.local/state/opencode/service.json`. Both files must remain mode `0600`.
+The old Keychain item (`ai.opencode.web` / `opencode-server`) may remain as a
+backup; startup and client discovery do not depend on it.
 
 Tailscale Serve configuration is local Tailscale state and is intentionally
 not stored in Git.
@@ -83,25 +88,22 @@ cd ~/dotfiles
 opencode-update --no-restart
 ```
 
-Store a long, fixed password from the password manager. Keeping `-w` as the
-last argument makes `security` prompt without putting the password in shell
-history or process arguments:
+For a fresh installation, configure the native service before loading the
+LaunchAgent. These settings stop an existing managed service, so run them
+from an independent Terminal with sessions idle:
 
 ```zsh
-security add-generic-password \
-  -U \
-  -a "opencode-server" \
-  -s "ai.opencode.web" \
-  -w
+opencode service set hostname 127.0.0.1
+opencode service set port 4096
+opencode service set env OPENCODE_DISABLE_FFF 1
+opencode service set env OPENCODE_DISABLE_AUTOUPDATE 1
+opencode service get password >/dev/null
 ```
 
-Confirm the item exists without reading its secret:
-
-```zsh
-security find-generic-password \
-  -a "opencode-server" \
-  -s "ai.opencode.web"
-```
+The last command creates a persistent generated password if one is absent.
+When migrating an existing phone login, preserve its password without passing
+the secret in process arguments. Do not run a second server against the same
+session database during migration.
 
 From an independent Terminal, check whether the job is already loaded:
 
@@ -139,6 +141,11 @@ The standalone macOS client can install its CLI integration from Tailscale
 Settings. Until then, replace `tailscale` below with
 `/Applications/Tailscale.app/Contents/MacOS/Tailscale`.
 
+Set `TERM=dumb` when invoking the app-bundled CLI from launchd or another
+environment without `TERM`. Otherwise it can print a GUI startup error with
+exit status zero instead of the requested JSON; validate the response as well
+as the exit status.
+
 Create the persistent, tailnet-only mapping:
 
 ```zsh
@@ -152,9 +159,10 @@ tailscale serve status
 ```
 
 On Android, keep Tailscale connected and open the reported private HTTPS URL
-directly. Authenticate the browser with username `opencode` and the Keychain
-password, then add the page to the home screen. Use the bare origin in the
-browser; only the TUI's `--server` flag needs the explicit `/api` base.
+directly. Authenticate with username `opencode` and the native service password,
+then add the page to the home screen. Use the bare origin in the browser.
+Humans can run `opencode pair` locally to see pairing credentials; agents must
+not expose its output in logs or chat.
 
 Android Always-on VPN can keep Tailscale connected; do not enable blocking
 connections without VPN unless that behavior is explicitly desired.
@@ -188,9 +196,8 @@ only under `~/.local/state/here-now/aliases`; they must not be committed. Omit
 
 ## Daily use
 
-The `oc` shell function retrieves the password from Keychain and connects the
-OpenCode 2 TUI to the shared backend while preserving the pane's current
-directory:
+The `oc` shell function uses normal service discovery and preserves the pane's
+current directory. Ordinary `opencode` commands reach the same backend:
 
 ```zsh
 oc
@@ -198,46 +205,34 @@ oc -c
 oc -s <session-id>
 ```
 
-Every v2 API route lives under `/api`, so `oc` passes
-`--server http://127.0.0.1:4096/api`. A TUI error like
-`GET /session/... 404` means the `/api` base is missing from the URL or the
-process on 4096 is not the v2 server. Discover routes with an authenticated
-`GET /openapi.json`.
-
-Do not use plain `opencode` when the intent is to share the live backend with
-the phone. Seeing the same persisted session list is not proof of attachment.
-Verify a connected client with:
+Verify the discovered service address and PID:
 
 ```zsh
-pgrep -fl "opencode2.*--server http://127.0.0.1:4096/api"
+opencode service status
+opencode api get /api/health
 ```
 
 ## OpenCode 2 service model
 
-Bare CLI commands (no `--server`) use an on-demand background service —
-`opencode2 serve --service` on an ephemeral port with a generated password,
-registered in `~/.local/state/opencode/service.json`. It coexists with the
-launchd server and stays: the launchd server is what provides the fixed port,
-Keychain password, boot-time presence, and supervised updates the phone setup
-requires. Every server process runs the configured plugins over the same
-durable event stream, so `opencode-notify.sh` dedupes notifications with an
-atomic mkdir lock — duplicate notifications mean that dedupe broke.
+There is one native managed service for the shared session database. The
+`ai.opencode.web` LaunchAgent keeps the Mac awake and calls `opencode service
+start` every 30 seconds; this reuses a healthy service and starts it if absent.
+It does not run an independent `opencode serve` backend. Fixed loopback binding
+and authentication come from native service configuration, not environment-only
+`OPENCODE_SERVER_PASSWORD` (which service mode ignores).
 
-MCP OAuth flow (the `mcp` subcommand rejects `--server`): authenticate bare,
-then tell the shared server to reconnect, then verify:
+Use native discovery for CLI, API, MCP, and TUI clients. Never run an ordinary
+`serve` or `--standalone` server alongside it against the same database: the
+servers can execute the same session concurrently and omit pending tool results
+from model requests. Separate account databases also need separate service
+configuration and listener ports before running simultaneously.
+
+MCP OAuth and verification now use the same service:
 
 ```zsh
 opencode mcp auth <name>
-oc_curl() {
-  curl --config <(printf 'user = "opencode:%s"\n' \
-    "$(security find-generic-password -a opencode-server -s ai.opencode.web -w)") "$@"
-}
-oc_curl -X POST "http://127.0.0.1:4096/api/mcp/<name>/connect?directory=$PWD"
-oc_curl "http://127.0.0.1:4096/api/mcp?directory=$PWD"
+opencode mcp list
 ```
-
-`oc_curl` keeps the password out of process arguments; reuse it for any
-authenticated request in this runbook.
 
 Plugin code reloads lazily per project directory, cache-keyed on file mtime —
 editing a plugin changes nothing for already-open directories until a config
@@ -248,8 +243,8 @@ via `~/.cache/pane-notify.log`, which logs every attempt including suppressed
 duplicates.
 
 Config edits hot-reload, but propagation through the dotfiles symlinks can lag
-minutes. Verify with an authenticated `GET /api/config`; kickstart the
-LaunchAgent when the change must apply now.
+minutes. Verify with `opencode api get /api/config`; restart the native service
+from an independent Terminal when the change must apply now.
 
 ## Operations
 
@@ -259,11 +254,15 @@ Inspect the job:
 launchctl print gui/$UID/ai.opencode.web
 ```
 
-Restart it from an independent Terminal:
+Restart the backend from an independent Terminal:
 
 ```zsh
-launchctl kickstart -k gui/$UID/ai.opencode.web
+opencode service restart
 ```
+
+Kickstarting `ai.opencode.web` only restarts its availability monitor. To stop
+the backend for maintenance, unload the monitor first or it will start the
+service again on its next check.
 
 Inspect local logs:
 
@@ -272,13 +271,13 @@ tail -f "$HOME/Library/Logs/opencode-web.error.log"
 tail -f "$HOME/Library/Logs/opencode-update.log"
 ```
 
-The server LaunchAgent uses `KeepAlive` and `caffeinate -i`. It restarts
-OpenCode after failure and prevents idle system sleep even on battery. The
-update LaunchAgent checks `@opencode-ai/cli@next` daily at 04:00, atomically
+The availability monitor uses `KeepAlive` and `caffeinate -i`. It restarts
+the native service after failure and prevents idle system sleep even on battery. The
+update LaunchAgent checks `@opencode-ai/cli@beta` daily at 04:00, atomically
 activates new builds, restarts the server, and rolls back when the new server
 does not become healthy. Closing a MacBook lid still normally sleeps the
-machine. After a reboot, the user must log in and unlock the Keychain before
-these user LaunchAgents can operate normally.
+machine. After a reboot, the user must log in before these user LaunchAgents
+can operate normally; unlocking Keychain is no longer required for the server.
 
 ## Verify and troubleshoot
 
@@ -287,6 +286,8 @@ Check in this order:
 ```zsh
 launchctl print gui/$UID/ai.opencode.web
 launchctl print gui/$UID/ai.opencode.update
+opencode service status
+opencode api get /api/health
 lsof -nP -iTCP:4096 -sTCP:LISTEN
 curl -o /dev/null -sS -w '%{http_code}\n' http://127.0.0.1:4096/api/health
 curl -fsSL http://go/here-now-llm
@@ -295,13 +296,16 @@ tailscale status
 ```
 
 The listener must be `127.0.0.1:4096`, and the unauthenticated health request
-must return `401`. Common failures are a locked or missing Keychain item, a
-closed lid, disconnected Tailscale, stale browser Basic Auth credentials, or a
-second OpenCode process already using port 4096. An authenticated request to
-the bare origin must return the OpenCode HTML UI.
+must return `401`. The PID returned through native API discovery must match
+the listener and the authenticated Tailscale health endpoint. Common failures
+are a closed lid, disconnected Tailscale, stale browser credentials, or a
+second server using the same database or port. An authenticated request to the
+bare Tailscale origin must return the OpenCode HTML UI.
 
 ## Rotate the password
 
-Run the secure `security add-generic-password -U ... -w` command from the
-install section, then restart the LaunchAgent from an independent Terminal.
-Browsers and TUI clients must authenticate again with the new password.
+With sessions idle, use an independent Terminal to unset the native service
+password, generate a new persistent password with `opencode service get password`,
+and restart the service. That command displays the new password: run it only
+in the human's terminal, never in agent-visible output. Browsers must log in
+again; ordinary CLI clients obtain credentials through native discovery.

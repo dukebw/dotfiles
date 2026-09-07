@@ -174,22 +174,7 @@ rlog() {
 }
 
 oc() {
-  local opencode_server_password
-
-  opencode_server_password=$(
-    /usr/bin/security find-generic-password \
-      -a "opencode-server" \
-      -s "ai.opencode.web" \
-      -w
-  ) || return 1
-
-  # OpenCode 2 mounts every route under /api; a bare origin makes the TUI
-  # request /session/... and 404.
-  OPENCODE_SERVER_PASSWORD="$opencode_server_password" \
-    command opencode \
-      --server http://127.0.0.1:4096/api \
-      "$@" \
-      "$PWD"
+  command opencode "$@" "$PWD"
 }
 
 # Stamp `opencode run` sessions with a "[run]" title marker so the notify

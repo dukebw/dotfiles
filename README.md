@@ -42,8 +42,8 @@ cd ~/dotfiles && ./install.sh
 - `opencode/opencode.json` - OpenCode config
 - `opencode/commands/` - global OpenCode slash commands
 - `.claude/skills/opencode-remote/SKILL.md` - private remote OpenCode runbook
-- `launchd/ai.opencode.web.plist` - supervised OpenCode 2 API server
-- `launchd/ai.opencode.update.plist` - daily OpenCode 2 preview updater
+- `launchd/ai.opencode.web.plist` - OpenCode 2 managed-service availability monitor
+- `launchd/ai.opencode.update.plist` - daily OpenCode 2 beta updater
 - `launchd/ai.gh-stack.upstream-sync.plist` - daily upstream sync for `dukebw/gh-stack`
 - `ssh/config.template` - X11 forwarding for Coder
 
@@ -57,17 +57,19 @@ cd ~/dotfiles && ./install.sh
 - `bin/check-remote-clangd-nvim` - headless verification for remote CUDA diagnostics in Neovim
 - `bin/opencode` - OpenCode 2 shim backed by the versioned local installation
 - `bin/opencode-mcp-remote` - compatibility bridge for older remote MCP servers
-- `bin/opencode-update` - install and atomically activate `@opencode-ai/cli@next`
-- `bin/opencode-web-server` - Keychain-authenticated OpenCode 2 API server for Tailscale Serve
+- `bin/opencode-update` - install and atomically activate `@opencode-ai/cli@beta`
+- `bin/opencode-web-server` - keep the native OpenCode 2 service available for Tailscale Serve
 - `bin/gh-stack-upstream-sync` - validate and synchronize `github/gh-stack` into the fork
 - `bin/here-now-publish` - publish and version internal artifacts through here-now
 
 ## Remote OpenCode
 
-The remote OpenCode setup runs one localhost-only OpenCode 2 API server under a
-macOS LaunchAgent. Laptop `oc` clients connect directly, while the hosted
-OpenCode app reaches it through private Tailscale Serve HTTPS. The password
-remains in macOS Keychain and no tailnet identity or URL is committed.
+The remote OpenCode setup uses one native OpenCode 2 background service on
+localhost. Laptop `oc`, ordinary CLI commands, and the browser share that
+service; a LaunchAgent keeps it available and the Mac awake. The browser
+reaches it through private Tailscale Serve HTTPS. Tailscale is the remote
+access boundary; native service credentials stay in owner-only local files.
+No credentials, tailnet identity, or URL are committed.
 Generated static reports are published to centrally hosted here-now rather
 than served from this Mac.
 
