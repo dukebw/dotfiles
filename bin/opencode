@@ -2,6 +2,14 @@
 
 set -euo pipefail
 
+case "${0:t}" in
+  opencode-personal|opencode-enterprise)
+    # Each account needs its own credentials, conversations, and background server.
+    export XDG_DATA_HOME="$HOME/.local/share/${0:t}"
+    export XDG_STATE_HOME="$HOME/.local/state/${0:t}"
+    ;;
+esac
+
 readonly opencode_bin="$HOME/.local/share/opencode2/current/bin/opencode2"
 readonly updater="$HOME/.local/bin/opencode-update"
 

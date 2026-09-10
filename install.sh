@@ -66,6 +66,8 @@ backup_and_link "$DOTFILES_DIR/bin/check-remote-clangd-nvim" "$HOME/.local/bin/c
 backup_and_link "$DOTFILES_DIR/.local/bin/pydebug-setup" "$HOME/.local/bin/pydebug-setup"
 backup_and_link "$DOTFILES_DIR/bin/rexec" "$HOME/.local/bin/rexec"
 backup_and_link "$DOTFILES_DIR/bin/opencode" "$HOME/.local/bin/opencode"
+backup_and_link "$DOTFILES_DIR/bin/opencode" "$HOME/.local/bin/opencode-personal"
+backup_and_link "$DOTFILES_DIR/bin/opencode" "$HOME/.local/bin/opencode-enterprise"
 backup_and_link "$DOTFILES_DIR/bin/opencode-mcp-remote" "$HOME/.local/bin/opencode-mcp-remote"
 backup_and_link "$DOTFILES_DIR/bin/opencode-update" "$HOME/.local/bin/opencode-update"
 backup_and_link "$DOTFILES_DIR/bin/opencode-web-server" "$HOME/.local/bin/opencode-web-server"
