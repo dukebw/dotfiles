@@ -287,6 +287,16 @@ During TRT-LLM startup, distinguish active work from failure:
 
 - `CUDA_ERROR_NOT_READY` from `cuMemImportFromShareableHandle` indicates broken
   MNNVL/ComputeDomain setup.
+- A deterministic CUDA OOM during weight materialization with ~167 GiB of
+  non-torch memory on every rank (`109 GiB allocated by PyTorch` for K3) is the
+  TRT-LLM MNNVL allreduce workspace leaking once per AllReduce module when the
+  fabric import fails: `McastDeviceMemory` cuMemCreates a 512 MiB fabric page,
+  then throws `CUDA_ERROR_NOT_SUPPORTED` without freeing it, and
+  `AllReduce.__init__` swallows the error at debug level with no negative cache.
+  Fix the ComputeDomain first; to unblock without it, set
+  `allreduce_strategy: NCCL` in the engine override (stock LlmArgs field), which
+  skips MNNVL entirely. `supports_mnnvl()` returning true only checks the device
+  attribute, not the IMEX channel.
 - FlashInfer `ninja`, `nvcc`, `ptxas`, `gcc`, or `cc1plus` processes indicate
   active kernel compilation. There is no reliable completion percentage.
 - Cubin downloads, autotuning, CUDA graph capture, and KV-cache allocation are
