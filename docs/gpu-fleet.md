@@ -15,7 +15,8 @@ q       quit one nvitop (its pane closes)
 1. `b10-gpu fleet` asks **Kubernetes** which GPU containers you own in the
    `baseten`, `baseten-devenv`, `dynamo`, and `mp-devenv` namespaces of the
    rcli-selected context and each extra context passed to `gpu-fleet`. The
-   Zellij binding also queries `ali-apse8-mpdev-1`. Ownership means
+   Zellij binding always also queries `ali-apse7-mpdev-1` and
+   `ali-apse8-mpdev-1`, regardless of the selected context. Ownership means
    `$FLEET_USER` (default `$USER`)
    appears in the pod name, `baseten.co/model`, or Helm instance label. Only
    containers with a positive `nvidia.com/gpu` request are included, so managed
