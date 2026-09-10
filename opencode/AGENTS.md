@@ -2,7 +2,7 @@
 
 Default to completing work in the current agent.
 
-Do not use the Task tool merely to search the repository, inspect a small number of files, or perform work that is
+Do not spawn a subagent merely to search the repository, inspect a small number of files, or perform work that is
 sequential.
 
 Use a subagent only when:
@@ -62,3 +62,16 @@ When addressing PR review comments, load the `address-pr-review-comments` skill.
 
 For commits in Baseten repositories, including forks, use the `What`, `How`, and `Testing` sections from
 `~/work/baseten/.github/pull_request_template.md` as the commit body. Omit the `Release requirements` section.
+
+## Code changes
+
+Prefer a surgical edit over rewriting a file when the result is the same.
+
+If you find a pre-existing bug, performance concern, or behavior the task doesn't mention, don't fix, optimize, or
+extend it in this change unless the requested behavior cannot work without it; report it as a follow-up. Keep scratch
+checks and verification scripts out of the repository. Commit tests only where the task asks for them or the repository
+already keeps tests for this kind of change, sized like the neighboring test files.
+
+## Terminal output
+
+Paste URLs verbatim on their own line, never as markdown links; markdown links are not clickable in my terminal.
