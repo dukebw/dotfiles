@@ -155,6 +155,17 @@ rexec -p clangd --shell 'command -v clangd-18 && command -v clang++-18'
 The StatefulSet installs `clangd-18` during pod startup. Reapply its manifest if
 either binary is missing.
 
+The `b200` profile targets `sm_100a`, which clangd-18 rejects, so it instead uses
+clangd 22 from `/workspace/.remote-clangd-toolchain/clangd_22.1.6/bin/clangd`.
+`/workspace` is an `emptyDir`: if the pod is recreated, reprovision with
+
+```bash
+rexec -p clangd --shell 'mkdir -p /workspace/.remote-clangd-toolchain &&
+  cd /workspace/.remote-clangd-toolchain &&
+  curl -sLO https://github.com/clangd/clangd/releases/download/22.1.6/clangd-linux-22.1.6.zip &&
+  unzip -q -o clangd-linux-22.1.6.zip && rm clangd-linux-22.1.6.zip'
+```
+
 Then open a CUDA file locally:
 
 ```bash
