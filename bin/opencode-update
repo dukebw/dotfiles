@@ -96,7 +96,15 @@ node_bin="$(command -v node)" || {
   exit 1
 }
 
-latest="$("$npm_bin" view "$package@$channel" version --silent)"
+release_selector="$channel"
+if [[ -f "$root/pinned-version" ]]; then
+  release_selector="$(<"$root/pinned-version")"
+  [[ "$release_selector" =~ '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ]] || {
+    log "OpenCode update failed: pinned-version must contain an exact version"
+    exit 1
+  }
+fi
+latest="$("$npm_bin" view "$package@$release_selector" version --silent)"
 [[ "$latest" =~ '^[0-9A-Za-z][0-9A-Za-z._-]*$' ]] || {
   log "OpenCode update failed: npm returned an invalid version"
   exit 1
