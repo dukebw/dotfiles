@@ -86,6 +86,7 @@ backup_and_link "$DOTFILES_DIR/launchd/ai.gh-stack.upstream-sync.plist" "$HOME/L
 mkdir -p "$HOME/.config/opencode"
 backup_and_link "$DOTFILES_DIR/opencode/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
 backup_and_link "$DOTFILES_DIR/opencode/opencode.json" "$HOME/.config/opencode/opencode.json"
+backup_and_link "$DOTFILES_DIR/opencode/opencode.jsonc" "$HOME/.config/opencode/opencode.jsonc"
 backup_and_link "$DOTFILES_DIR/opencode/commands" "$HOME/.config/opencode/commands"
 backup_and_link "$DOTFILES_DIR/opencode/plugins" "$HOME/.config/opencode/plugins"
 backup_and_link "$DOTFILES_DIR/opencode/scripts" "$HOME/.config/opencode/scripts"

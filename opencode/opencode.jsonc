@@ -1,0 +1,54 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "linear": {
+      "type": "remote",
+      "url": "https://mcp.linear.app/mcp",
+      "enabled": true
+    },
+    "slack": {
+      "type": "remote",
+      "url": "https://mcp.slack.com/mcp",
+      "enabled": true,
+      "oauth": {
+        "clientId": "549215267044.11597103110386",
+        "redirectUri": "http://127.0.0.1:19876/mcp/oauth/callback",
+        "scope": "search:read.public search:read.private search:read.mpim search:read.im search:read.files search:read.users channels:history groups:history mpim:history im:history canvases:read users:read users:read.email reactions:read emoji:read files:read channels:read groups:read mpim:read"
+      }
+    },
+    "baseten": {
+      "type": "remote",
+      "url": "http://127.0.0.1:4202/mcp",
+      "enabled": true,
+      "timeout": 30000
+    },
+    "baseten-internal-mcp": {
+      "type": "remote",
+      "url": "https://baseten.runlayer.com/api/v1/proxy/3a93ef17-f7c5-4262-b554-6d8bdecca086/mcp",
+      "enabled": true,
+      "oauth": {},
+      "timeout": 30000
+    },
+    "coros": {
+      "type": "local",
+      "command": [
+        "/bin/zsh",
+        "-lc",
+        "exec opencode-mcp-remote https://mcpus.coros.com/mcp"
+      ],
+      "enabled": true,
+      "timeout": 30000
+    },
+    "grafana": {
+      "type": "local",
+      "command": ["pipx", "run", "mcp-grafana"],
+      "enabled": false,
+      "timeout": 30000,
+      "environment": {
+        "GRAFANA_URL": "https://grafana.baseten.co",
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "{env:GRAFANA_SERVICE_ACCOUNT_TOKEN}",
+        "GRAFANA_ORG_ID": "1"
+      }
+    }
+  }
+}
