@@ -65,7 +65,7 @@ if [[ "${#mirror_build_paths[@]}" -gt 0 && -z "$cmake_source_dir" ]]; then
   exit 2
 fi
 
-for mirror_path in "${mirror_build_paths[@]}"; do
+for mirror_path in ${mirror_build_paths[@]+"${mirror_build_paths[@]}"}; do
   if [[ -z "$mirror_path" || "$mirror_path" == /* || "$mirror_path" == ".." || "$mirror_path" == ../* || "$mirror_path" == */../* || "$mirror_path" == */.. ]]; then
     printf 'remote-clangd: mirror path must stay within the CMake build directory: %s\n' "$mirror_path" >&2
     exit 2
@@ -92,7 +92,7 @@ if [[ -n "$cmake_source_dir" ]]; then
   fi
 
   cmake_command="env"
-  for assignment in "${cmake_env[@]}"; do
+  for assignment in ${cmake_env[@]+"${cmake_env[@]}"}; do
     if [[ ! "$assignment" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
       printf 'remote-clangd: invalid CMake environment assignment: %s\n' "$assignment" >&2
       exit 2
@@ -100,7 +100,7 @@ if [[ -n "$cmake_source_dir" ]]; then
     cmake_command+=" $(quote "$assignment")"
   done
   cmake_command+=" cmake -S $(quote "$remote_cmake_source_dir") -B $(quote "$compile_commands_dir")"
-  for arg in "${cmake_args[@]}"; do
+  for arg in ${cmake_args[@]+"${cmake_args[@]}"}; do
     cmake_command+=" $(quote "$arg")"
   done
 
