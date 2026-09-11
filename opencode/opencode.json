@@ -3,13 +3,13 @@
   "$schema": "https://opencode.ai/config.json",
   "plugins": ["./plugins/notify.ts"],
   "mcp": {
-    "notion": {
-      "type": "remote",
-      "url": "https://mcp.notion.com/mcp",
-      "enabled": true,
-      "oauth": {}
-    },
     "servers": {
+      "notion": {
+        "type": "remote",
+        "url": "https://mcp.notion.com/mcp",
+        "oauth": {},
+        "disabled": false
+      },
       "honeycomb": {
         "type": "remote",
         "url": "https://mcp.honeycomb.io/mcp"
@@ -17,6 +17,82 @@
     }
   },
   "providers": {
+    "openai": {
+      "models": {
+        "gpt-6-astra-fast": {
+          "limit": {
+            "context": 1000000,
+            "input": 872000,
+            "output": 128000
+          }
+        },
+        "gpt-6-astra": {
+          "name": "GPT-6 Astra",
+          "family": "gpt-astra",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 1000000,
+            "input": 872000,
+            "output": 128000
+          },
+          "settings": {
+            "reasoningEffort": "medium",
+            "reasoningSummary": "auto",
+            "include": ["reasoning.encrypted_content"]
+          },
+          "variants": [
+            { "id": "low", "settings": { "reasoningEffort": "low" } },
+            { "id": "medium", "settings": { "reasoningEffort": "medium" } },
+            { "id": "high", "settings": { "reasoningEffort": "high" } },
+            { "id": "xhigh", "settings": { "reasoningEffort": "xhigh" } },
+            { "id": "max", "settings": { "reasoningEffort": "max" } }
+          ]
+        },
+        "gpt-5.4": {
+          "limit": {
+            "context": 1050000,
+            "input": 922000,
+            "output": 128000
+          }
+        },
+        "gpt-5.3-codex": {
+          "settings": {
+            "reasoningSummary": "detailed",
+            "reasoningEffort": "xhigh"
+          }
+        },
+        "gpt-5.5-fast": {
+          "settings": {
+            "reasoningSummary": "detailed"
+          }
+        },
+        "gpt-5.6-sol-fast": {
+          "settings": {
+            "reasoningSummary": "detailed",
+            "reasoningEffort": "max"
+          },
+          "limit": {
+            "context": 1050000,
+            "input": 900000,
+            "output": 128000
+          },
+          "variants": [
+            {
+              "id": "max",
+              "settings": {
+                "reasoningEffort": "max",
+                "reasoningSummary": "auto",
+                "include": ["reasoning.encrypted_content"]
+              }
+            }
+          ]
+        }
+      }
+    },
     "baseten": {
       "models": {
         "moonshotai/Kimi-K3": {
@@ -67,90 +143,19 @@
       }
     }
   },
-  "provider": {
-    "openai": {
-      "models": {
-        "gpt-6-astra-fast": {
-          "limit": {
-            "context": 1000000,
-            "input": 872000,
-            "output": 128000
-          }
-        },
-        "gpt-6-astra": {
-          "name": "GPT-6 Astra",
-          "family": "gpt-astra",
-          "reasoning": true,
-          "tool_call": true,
-          "temperature": false,
-          "modalities": {
-            "input": ["text", "image", "pdf"],
-            "output": ["text"]
-          },
-          "limit": {
-            "context": 1000000,
-            "input": 872000,
-            "output": 128000
-          },
-          "options": {
-            "reasoningEffort": "medium",
-            "reasoningSummary": "auto",
-            "include": ["reasoning.encrypted_content"]
-          },
-          "variants": {
-            "low": { "reasoningEffort": "low" },
-            "medium": { "reasoningEffort": "medium" },
-            "high": { "reasoningEffort": "high" },
-            "xhigh": { "reasoningEffort": "xhigh" },
-            "max": { "reasoningEffort": "max" }
-          }
-        },
-        "gpt-5.4": {
-          "limit": {
-            "context": 1050000,
-            "input": 922000,
-            "output": 128000
-          }
-        },
-        "gpt-5.3-codex": {
-          "options": {
-            "reasoningSummary": "detailed",
-            "reasoningEffort": "xhigh"
-          }
-        },
-        "gpt-5.5-fast": {
-          "options": {
-            "reasoningSummary": "detailed"
-          }
-        },
-        "gpt-5.6-sol-fast": {
-          "options": {
-            "reasoningSummary": "detailed",
-            "reasoningEffort": "max"
-          },
-          "limit": {
-            "context": 1050000,
-            "input": 900000,
-            "output": 128000
-          },
-          "variants": {
-            "max": {
-              "reasoningEffort": "max",
-              "reasoningSummary": "auto",
-              "include": ["reasoning.encrypted_content"]
-            }
-          }
-        }
-      }
-    }
-  },
   "compaction": {
     "auto": true,
     "keep": {
       "tokens": 60000
     }
   },
-  "permission": "allow",
+  "permissions": [
+    {
+      "action": "*",
+      "resource": "*",
+      "effect": "allow"
+    }
+  ],
   "agents": {
     "build": {
       "model": "openai/gpt-6-astra-fast#max"
