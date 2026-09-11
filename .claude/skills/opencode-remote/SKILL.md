@@ -272,10 +272,19 @@ tail -f "$HOME/Library/Logs/opencode-update.log"
 ```
 
 The availability monitor uses `KeepAlive` and `caffeinate -i`. It restarts
-the native service after failure and prevents idle system sleep even on battery. The
-update LaunchAgent checks `@opencode-ai/cli@beta` daily at 04:00, atomically
-activates new builds, restarts the server, and rolls back when the new server
-does not become healthy. Closing a MacBook lid still normally sleeps the
+the native service after failure and prevents idle system sleep even on battery.
+The update LaunchAgent checks `@opencode-ai/cli@beta` daily at 04:00. Its
+`opencode-patch-build` helper tries the saved `opencode/patches/request-throughput.patch`
+against that release's exact source commit in a disposable worktree under `~/work/`.
+Clean patches must pass generated-client checks, typechecks, tests, a native build,
+and an isolated private-server health check. Release/patch metadata caches successful
+builds and keeps the current patched installation when no new release or patch exists.
+Conflicts and build failures select the official release; patches already included
+upstream also select the official release. The updater atomically activates the selected
+build and restarts the server. If a patched server fails health checks, it tries the
+official release before rolling back to the previous installation. Automatic updates
+remain enabled; removing the saved patch file restores official-only updates.
+Closing a MacBook lid still normally sleeps the
 machine. After a reboot, the user must log in before these user LaunchAgents
 can operate normally; unlocking Keychain is no longer required for the server.
 

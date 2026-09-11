@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Build a cleanly applicable throughput patch; print the selected version only."""
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path.home() / ".local/share/opencode2"
+PATCH = Path(__file__).resolve().parent.parent / "opencode/patches/request-throughput.patch"
+REPO = Path.home() / "work/opencode-update-source.git"
+UPSTREAM = "https://github.com/anomalyco/opencode.git"
+
+
+def log(message):
+    print(f"Throughput patch: {message}", file=sys.stderr, flush=True)
+
+
+def run(args, *, cwd=None, capture=False, check=True, input=None, env=None):
+    result = subprocess.run(
+        [str(arg) for arg in args], cwd=cwd, input=input, text=True, env=env,
+        stdout=subprocess.PIPE if capture else sys.stderr, stderr=sys.stderr, timeout=1800,
+    )
+    if check:
+        result.check_returncode()
+    return result
+
+
+def binary_version(binary):
+    return run([binary, "--version"], capture=True).stdout.strip().split()[-1].removeprefix("v")
+
+
+def cached(directory, release, patch_id):
+    if (ROOT / "patch-failures" / directory.resolve().name).exists() or not (directory / "throughput.json").is_file():
+        return None
+    metadata = json.loads((directory / "throughput.json").read_text())
+    if metadata.get("release_seen") != release or metadata.get("patch_id") != patch_id:
+        return None
+    version = metadata["version"]
+    if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._-]*", version) or directory.resolve().name != version:
+        raise ValueError("Invalid cached patch version")
+    if binary_version(directory / "bin/opencode2") != version:
+        raise ValueError("Cached patch binary version does not match")
+    return version
+
+
+def release_commit(release):
+    cache = ROOT / "release-sources" / f"{release}.json"
+    if cache.is_file():
+        commit = json.loads(cache.read_text())["commit"]
+    else:
+        match = re.fullmatch(r"0\.0\.0-beta-(\d+)(?:\.\d+)?", release)
+        if not match:
+            raise ValueError(f"Cannot resolve the source of {release}")
+        times = json.loads(run(["npm", "view", "@opencode-ai/cli", "time", "--json"], capture=True).stdout)
+        published = datetime.datetime.fromisoformat(times[release].replace("Z", "+00:00"))
+        start = (published - datetime.timedelta(days=1)).date()
+        end = published.date()
+        commit = None
+        for page in range(1, 11):
+            endpoint = f"repos/anomalyco/opencode/actions/workflows/publish.yml/runs?per_page=100&page={page}&created={start}..{end}"
+            runs = json.loads(run(["gh", "api", endpoint], capture=True).stdout)["workflow_runs"]
+            commit = next((row["head_sha"] for row in runs if row["run_number"] == int(match[1])), None)
+            if commit or len(runs) < 100:
+                break
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError(f"No publish-workflow source found for {release}")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps({"commit": commit}) + "\n")
+    return commit
+
+
+def bun_for(worktree):
+    manager = json.loads((worktree / "package.json").read_text())["packageManager"]
+    match = re.fullmatch(r"bun@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)", manager)
+    if not match:
+        raise ValueError(f"Unsupported toolchain pin: {manager}")
+    pin = match[1]
+    prefix = Path.home() / ".local/share/opencode-build" / f"bun-{pin}"
+    bun = prefix / "node_modules/.bin/bun"
+    if not bun.is_file():
+        run(["npm", "install", "--prefix", prefix, "--no-audit", "--no-fund", "--ignore-scripts", f"bun@{pin}"])
+        run(["node", prefix / "node_modules/bun/install.js"])
+    if run([bun, "--version"], capture=True).stdout.strip() != pin:
+        raise ValueError(f"Expected Bun {pin}")
+    return bun
+
+
+def select(release):
+    if not PATCH.is_file():
+        log("no patch file; using the official release")
+        return release
+    patch = PATCH.read_text()
+    if not patch.strip():
+        log("empty patch file; using the official release")
+        return release
+    patch_id = hashlib.sha256(patch.encode()).hexdigest()
+    current = cached(ROOT / "current", release, patch_id)
+    if current:
+        log(f"reusing {current}; no new release or patch")
+        return current
+    version = f"{release}-throughput-{patch_id[:12]}"
+    destination = ROOT / "versions" / version
+    if (ROOT / "patch-failures" / version).exists():
+        log(f"{version} previously failed health checks; using the official release")
+        return release
+    if cached(destination, release, patch_id):
+        log(f"reusing tested build {version}")
+        return version
+    if destination.exists():
+        raise ValueError(f"Unrecognized build directory: {destination}")
+    commit = release_commit(release)
+    started = time.monotonic()
+    log(f"checking {release} at {commit}")
+    REPO.parent.mkdir(parents=True, exist_ok=True)
+    if not REPO.exists():
+        run(["git", "clone", "--bare", "--filter=blob:none", "--single-branch", "--branch", "v2", UPSTREAM, REPO])
+    if run(["git", "-C", REPO, "rev-parse", "--is-bare-repository"], capture=True).stdout.strip() != "true":
+        raise ValueError(f"Expected a bare build cache: {REPO}")
+    run(["git", "-C", REPO, "fetch", "--no-tags", UPSTREAM, commit])
+    worktree = Path(tempfile.mkdtemp(prefix="opencode-update-", dir=REPO.parent))
+    stage = None
+    added = False
+    try:
+        run(["git", "-C", REPO, "worktree", "add", "--detach", worktree, commit])
+        added = True
+        if run(["git", "apply", "--check", "-"], cwd=worktree, input=patch, check=False).returncode:
+            included = run(["git", "apply", "--reverse", "--check", "-"], cwd=worktree, input=patch, check=False).returncode == 0
+            log(f"{release}: {'patch already included' if included else 'patch does not apply cleanly'}; using the official release")
+            return release
+        run(["git", "apply", "--index", "-"], cwd=worktree, input=patch)
+        bun = bun_for(worktree)
+        env = {**os.environ, "PATH": f"{bun.parent}:{os.environ['PATH']}", "OPENCODE_CHANNEL": "beta", "OPENCODE_VERSION": version}
+        log(f"testing and building {version} with {bun}")
+        run([bun, "install", "--frozen-lockfile"], cwd=worktree, env=env)
+        run([bun, "run", "check:generated"], cwd=worktree / "packages/client", env=env)
+        for package in ["schema", "core", "client", "tui"]:
+            run([bun, "typecheck"], cwd=worktree / "packages" / package, env=env)
+        run([bun, "test", "test/session-runner.test.ts", "test/session-projector.test.ts", "test/session-step.test.ts", "--timeout", "30000", "--only-failures"], cwd=worktree / "packages/core", env=env)
+        run([bun, "test", "test/cli/tui/session-rows.test.ts", "test/app-lifecycle.test.tsx", "--timeout", "30000", "--only-failures"], cwd=worktree / "packages/tui", env=env)
+        run([bun, "run", "build", "--single", "--skip-install"], cwd=worktree / "packages/cli", env=env)
+        binaries = list((worktree / "packages/cli/dist").glob("cli-*/bin/opencode2"))
+        if len(binaries) != 1 or binary_version(binaries[0]) != version:
+            raise ValueError("Native build did not produce the expected version")
+        with tempfile.TemporaryDirectory(prefix=".patch-smoke-", dir=ROOT) as smoke:
+            isolated = {key: value for key, value in env.items() if key not in ["OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD"]}
+            isolated.update({f"XDG_{kind}_HOME": f"{smoke}/{kind.lower()}" for kind in ["DATA", "STATE", "CONFIG", "CACHE"]})
+            isolated.update(OPENCODE_DB=f"{smoke}/smoke.db", OPENCODE_CONFIG_DIR=f"{smoke}/config/opencode",
+                            OPENCODE_CONFIG_PROJECT_DISABLE="1", OPENCODE_DISABLE_AUTOUPDATE="1",
+                            OPENCODE_DISABLE_MODELS_FETCH="1", OPENCODE_DISABLE_FFF="1")
+            health = json.loads(run([binaries[0], "api", "--standalone", "get", "/api/health"], cwd=smoke, env=isolated, capture=True).stdout)
+            if not health.get("healthy") or health.get("version") != version:
+                raise ValueError("Patched binary failed isolated health check")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix=".patch-", dir=destination.parent))
+        (stage / "bin").mkdir()
+        shutil.copy2(binaries[0], stage / "bin/opencode2")
+        (stage / "throughput.json").write_text(json.dumps({"release_seen": release, "patch_id": patch_id, "base_commit": commit, "version": version}, indent=2) + "\n")
+        stage.rename(destination)
+        stage = None
+        log(f"built {version} in {time.monotonic() - started:.1f}s")
+        return version
+    finally:
+        if stage is not None:
+            shutil.rmtree(stage)
+        if added:
+            if run(["git", "-C", REPO, "worktree", "remove", "--force", worktree], check=False).returncode:
+                log(f"could not remove build worktree: {worktree}")
+        else:
+            worktree.rmdir()
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    if len(sys.argv) != 2 or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._-]*", sys.argv[1]):
+        sys.exit("usage: opencode-patch-build <release-version>")
+    try:
+        print(select(sys.argv[1]))
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        log(f"build unavailable: {error}")
+        sys.exit(1)

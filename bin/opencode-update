@@ -12,6 +12,7 @@ readonly lock_dir="$root/update.lock"
 readonly log_dir="$HOME/Library/Logs"
 readonly log_file="$log_dir/opencode-update.log"
 readonly service="gui/$UID/ai.opencode.web"
+readonly patch_builder="${0:A:h}/opencode-patch-build"
 
 restart_mode="changed"
 case "${1:-}" in
@@ -117,46 +118,62 @@ if [[ -x "$current_link/bin/opencode2" ]]; then
   current_version="$(binary_version "$current_link/bin/opencode2")"
 fi
 
-changed=false
-version_dir="$versions_dir/$latest"
-if [[ "$current_version" != "$latest" ]]; then
-  changed=true
-  if [[ ! -x "$version_dir/bin/opencode2" ]]; then
-    install_dir="$versions_dir/.install-$latest-$$"
-    log "Installing OpenCode $latest"
-    if ! "$npm_bin" install \
-      --global \
-      --prefix "$install_dir" \
-      --no-audit \
-      --no-fund \
-      --ignore-scripts \
-      "$package@$latest" >>"$log_file" 2>&1; then
-      log "OpenCode update failed while installing $latest"
-      exit 1
-    fi
-
-    if ! "$node_bin" \
-      "$install_dir/lib/node_modules/@opencode-ai/cli/postinstall.mjs" \
-      >>"$log_file" 2>&1; then
-      log "OpenCode update failed while preparing the platform binary"
-      exit 1
-    fi
-
-    installed_version="$(binary_version "$install_dir/bin/opencode2")"
-    [[ "$installed_version" == "$latest" ]] || {
-      log "OpenCode update failed: installed version ${installed_version:-missing} did not match $latest"
-      exit 1
-    }
-
-    rm -rf "$version_dir"
-    /bin/mv "$install_dir" "$version_dir"
-    install_dir=""
+official_dir="$versions_dir/$latest"
+if [[ ! -x "$official_dir/bin/opencode2" ]]; then
+  install_dir="$versions_dir/.install-$latest-$$"
+  log "Installing OpenCode $latest"
+  if ! "$npm_bin" install \
+    --global \
+    --prefix "$install_dir" \
+    --no-audit \
+    --no-fund \
+    --ignore-scripts \
+    "$package@$latest" >>"$log_file" 2>&1; then
+    log "OpenCode update failed while installing $latest"
+    exit 1
   fi
 
-  activate "versions/$latest"
-  log "Activated OpenCode $latest"
+  if ! "$node_bin" \
+    "$install_dir/lib/node_modules/@opencode-ai/cli/postinstall.mjs" \
+    >>"$log_file" 2>&1; then
+    log "OpenCode update failed while preparing the platform binary"
+    exit 1
+  fi
+
+  installed_version="$(binary_version "$install_dir/bin/opencode2")"
+  [[ "$installed_version" == "$latest" ]] || {
+    log "OpenCode update failed: installed version ${installed_version:-missing} did not match $latest"
+    exit 1
+  }
+
+  rm -rf "$official_dir"
+  /bin/mv "$install_dir" "$official_dir"
+  install_dir=""
+fi
+
+desired_version="$latest"
+if [[ -x "$patch_builder" ]]; then
+  if patched_version="$("$patch_builder" "$latest" 2>>"$log_file")"; then
+    if [[ "$patched_version" =~ '^[0-9A-Za-z][0-9A-Za-z._-]*$' ]] && \
+      [[ -x "$versions_dir/$patched_version/bin/opencode2" ]] && \
+      [[ "$(binary_version "$versions_dir/$patched_version/bin/opencode2")" == "$patched_version" ]]; then
+      desired_version="$patched_version"
+    else
+      log "Patch builder returned an invalid artifact; using official OpenCode $latest"
+    fi
+  else
+    log "Throughput patch build failed; using official OpenCode $latest (details in $log_file)"
+  fi
+fi
+
+changed=false
+version_dir="$versions_dir/$desired_version"
+if [[ "$current_version" != "$desired_version" ]]; then
+  changed=true
+  activate "versions/$desired_version"
+  log "Activated OpenCode $desired_version"
 else
-  log "OpenCode $latest is already current"
+  log "OpenCode $desired_version is already current"
 fi
 
 restart=false
@@ -168,7 +185,21 @@ fi
 
 if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
   log "Restarting the OpenCode server"
-  if ! "$HOME/.local/bin/opencode" service restart >/dev/null || ! wait_for_health; then
+  healthy=false
+  if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health; then
+    healthy=true
+  elif [[ "$desired_version" != "$latest" ]]; then
+    log "Patched OpenCode failed health checks; trying official OpenCode $latest"
+    mkdir -p "$root/patch-failures"
+    touch "$root/patch-failures/$desired_version"
+    activate "versions/$latest"
+    desired_version="$latest"
+    version_dir="$official_dir"
+    if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health; then
+      healthy=true
+    fi
+  fi
+  if [[ "$healthy" != true ]]; then
     if [[ -n "$previous_target" && -x "$root/$previous_target/bin/opencode2" ]]; then
       log "OpenCode $latest failed health checks; rolling back"
       activate "$previous_target"
@@ -182,7 +213,7 @@ if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
   fi
   log "OpenCode server is healthy"
 elif [[ "$changed" == true ]]; then
-  log "OpenCode $latest is staged for the next server start"
+  log "OpenCode $desired_version is staged for the next server start"
 fi
 
 previous_dir=""
@@ -190,7 +221,7 @@ if [[ -n "$previous_target" ]]; then
   previous_dir="$root/$previous_target"
 fi
 for directory in "$versions_dir"/*(N/); do
-  [[ "$directory" == "$version_dir" || "$directory" == "$previous_dir" ]] && continue
+  [[ "$directory" == "$version_dir" || "$directory" == "$previous_dir" || "$directory" == "$official_dir" ]] && continue
   rm -rf "$directory"
 done
 

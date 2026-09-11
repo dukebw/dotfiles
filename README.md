@@ -57,7 +57,8 @@ cd ~/dotfiles && ./install.sh
 - `bin/check-remote-clangd-nvim` - headless verification for remote CUDA diagnostics in Neovim
 - `bin/opencode` - OpenCode 2 shim backed by the versioned local installation
 - `bin/opencode-mcp-remote` - compatibility bridge for older remote MCP servers
-- `bin/opencode-update` - install and atomically activate `@opencode-ai/cli@beta`
+- `bin/opencode-update` - update OpenCode beta with the local throughput patch when it applies cleanly
+- `bin/opencode-patch-build` - resolve release sources, test/build the saved patch, and cache native artifacts
 - `bin/opencode-web-server` - keep the native OpenCode 2 service available for Tailscale Serve
 - `bin/gh-stack-upstream-sync` - validate and synchronize `github/gh-stack` into the fork
 - `bin/here-now-publish` - publish and version internal artifacts through here-now
@@ -75,6 +76,33 @@ than served from this Mac.
 
 See [the remote OpenCode skill](.claude/skills/opencode-remote/SKILL.md) for the
 architecture, secure installation, daily workflow, and troubleshooting.
+
+### Automatic throughput patch
+
+The daily updater uses `opencode/patches/request-throughput.patch`. For a new beta it resolves the exact source
+commit from the publish workflow, checks the patch in a disposable worktree under `~/work/`, installs the source's
+pinned Bun, and runs generated-client checks, typechecks, tests, and a native build with the embedded web UI.
+The binary must also pass a private-server health check using an isolated database/configuration.
+
+Builds are cached by release and patch content. `throughput.json` in each patched installation records the release
+seen, patch digest, actual source commit, and binary version. This also lets the updater keep a manually installed
+newer patched build until another official beta is published.
+
+A conflict, an already-included patch, or a build/test failure selects the official release. If a patched server
+fails health checks, the updater tries the official release, then the previous installation. The official artifact
+is retained for fallback; rejected patched builds are recorded under `~/.local/share/opencode2/patch-failures/`.
+Details are written to `~/Library/Logs/opencode-update.log`. Automatic updates remain enabled.
+
+To refresh the saved patch after changing the feature branch:
+
+```sh
+git -C ~/work/opencode fetch origin v2
+git -C ~/work/opencode diff --binary origin/v2...request-throughput > ~/dotfiles/opencode/patches/request-throughput.patch
+```
+
+Removing or emptying that patch file restores official-only updates. The updater's bare source cache is
+`~/work/opencode-update-source.git`; it does not modify the feature branch or its working tree. The existing
+`--no-restart` option still activates the selected binary on disk, so it should not be treated as a dry run.
 
 ## Kubernetes Pod Remote Execution
 

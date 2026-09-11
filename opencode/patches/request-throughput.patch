@@ -1,0 +1,456 @@
+diff --git a/packages/client/src/effect/api/api.ts b/packages/client/src/effect/api/api.ts
+index c926159b22..c3b2a7b869 100644
+--- a/packages/client/src/effect/api/api.ts
++++ b/packages/client/src/effect/api/api.ts
+@@ -711,7 +711,11 @@ export type SessionLogOutput =
+           readonly type: "session.step.streamed"
+           readonly durable: { readonly aggregateID: string; readonly seq: Event.Seq; readonly version: Event.Version }
+           readonly location?: Location.Ref | undefined
+-          readonly data: { readonly sessionID: Session.ID; readonly assistantMessageID: SessionMessage.ID }
++          readonly data: {
++            readonly sessionID: Session.ID
++            readonly assistantMessageID: SessionMessage.ID
++            readonly timing?: SessionMessage.AssistantTiming | undefined
++          }
+         }
+       | {
+           readonly id: Event.ID
+diff --git a/packages/client/src/promise/generated/types.ts b/packages/client/src/promise/generated/types.ts
+index 14409ac5c4..fd18c6ac25 100644
+--- a/packages/client/src/promise/generated/types.ts
++++ b/packages/client/src/promise/generated/types.ts
+@@ -127,6 +127,8 @@ export type ToolFileContent = { type: "file"; uri: string; mime: string; name?:
+ 
+ export type SessionStructuredError = { type: string; message: string; status?: number }
+ 
++export type SessionMessageAssistantTiming = { duration_ms: number; output_tokens_reported: boolean }
++
+ export type SessionMessageCompactionRunning = {
+   type: "compaction"
+   id: string
+@@ -728,7 +730,7 @@ export type SessionStepStreamed = {
+   type: "session.step.streamed"
+   durable: { aggregateID: string; seq: number; version: 1 }
+   location?: LocationRef
+-  data: { sessionID: string; assistantMessageID: string }
++  data: { sessionID: string; assistantMessageID: string; timing?: SessionMessageAssistantTiming }
+ }
+ 
+ export type SessionTextStarted = {
+@@ -2179,6 +2181,7 @@ export type SessionMessageAssistant = {
+   cost?: MoneyUSD
+   tokens?: TokenUsageInfo
+   error?: SessionStructuredError
++  timing?: SessionMessageAssistantTiming
+   retry?: SessionMessageAssistantRetry
+ }
+ 
+@@ -3149,6 +3152,7 @@ export type SessionImportInput = {
+             readonly cache: { readonly read: number; readonly write: number }
+           }
+           readonly error?: { readonly type: string; readonly message: string; readonly status?: number }
++          readonly timing?: { readonly duration_ms: number; readonly output_tokens_reported: boolean }
+           readonly retry?: {
+             readonly attempt: number
+             readonly at: number
+@@ -3459,6 +3463,7 @@ export type SessionImportInput = {
+             readonly cache: { readonly read: number; readonly write: number }
+           }
+           readonly error?: { readonly type: string; readonly message: string; readonly status?: number }
++          readonly timing?: { readonly duration_ms: number; readonly output_tokens_reported: boolean }
+           readonly retry?: {
+             readonly attempt: number
+             readonly at: number
+@@ -3769,6 +3774,7 @@ export type SessionImportInput = {
+             readonly cache: { readonly read: number; readonly write: number }
+           }
+           readonly error?: { readonly type: string; readonly message: string; readonly status?: number }
++          readonly timing?: { readonly duration_ms: number; readonly output_tokens_reported: boolean }
+           readonly retry?: {
+             readonly attempt: number
+             readonly at: number
+diff --git a/packages/client/src/solid/data.ts b/packages/client/src/solid/data.ts
+index 83c6eeb32e..6df7e376d8 100644
+--- a/packages/client/src/solid/data.ts
++++ b/packages/client/src/solid/data.ts
+@@ -846,6 +846,7 @@ export function createData(config: CreateDataInput) {
+             existing.rawFinish = undefined
+             existing.providerState = undefined
+             existing.time.streamed = undefined
++            existing.timing = undefined
+             existing.time.completed = undefined
+             if (event.data.snapshot) existing.snapshot = { ...existing.snapshot, start: event.data.snapshot }
+             return
+@@ -870,6 +871,7 @@ export function createData(config: CreateDataInput) {
+       case "session.step.streamed":
+         message.editAssistant(event.data.sessionID, event.data.assistantMessageID, (assistant) => {
+           assistant.time.streamed = event.created
++          assistant.timing = event.data.timing
+         })
+         return
+       case "session.step.ended": {
+diff --git a/packages/core/src/session/message-updater.ts b/packages/core/src/session/message-updater.ts
+index e78b656ab9..b79e1226ee 100644
+--- a/packages/core/src/session/message-updater.ts
++++ b/packages/core/src/session/message-updater.ts
+@@ -207,6 +207,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
+                 draft.rawFinish = undefined
+                 draft.providerState = undefined
+                 draft.time.streamed = undefined
++                draft.timing = undefined
+                 draft.time.completed = undefined
+                 if (event.data.snapshot) draft.snapshot = { ...draft.snapshot, start: event.data.snapshot }
+               }),
+@@ -238,6 +239,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
+       "session.step.streamed": (event) => {
+         return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
+           draft.time.streamed = created
++          draft.timing = event.data.timing
+         })
+       },
+       "session.step.ended": (event) => {
+diff --git a/packages/core/src/session/runner/publish-llm-event.ts b/packages/core/src/session/runner/publish-llm-event.ts
+index 729f70d867..d27407be05 100644
+--- a/packages/core/src/session/runner/publish-llm-event.ts
++++ b/packages/core/src/session/runner/publish-llm-event.ts
+@@ -109,10 +109,11 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
+   })
+   const currentAssistantMessageID = () =>
+     stepStarted ? Effect.succeed(assistantMessageID) : Effect.die(new Error("Tool event before assistant step start"))
+-  const streamed = Effect.fnUntraced(function* () {
++  const streamed = Effect.fnUntraced(function* (timing: SessionMessage.AssistantTiming) {
+     yield* bus.publish(SessionEvent.Step.Streamed, {
+       sessionID: input.sessionID,
+       assistantMessageID: yield* startAssistant(),
++      timing,
+     })
+   })
+   const providerState = (metadata: ProviderMetadata | undefined) => metadata?.[input.providerMetadataKey]
+diff --git a/packages/core/src/session/runner/step.ts b/packages/core/src/session/runner/step.ts
+index b43def2c35..faab0da1db 100644
+--- a/packages/core/src/session/runner/step.ts
++++ b/packages/core/src/session/runner/step.ts
+@@ -10,7 +10,7 @@ import {
+   type ToolCall,
+ } from "@opencode/ai"
+ import type { Agent } from "@opencode/schema/agent"
+-import { Cause, Data, Effect, Exit, Fiber, Option, Stream } from "effect"
++import { Cause, Clock, Data, Effect, Exit, Fiber, Option, Stream } from "effect"
+ import { SessionError } from "@opencode/schema/session-error"
+ import { Bus } from "../../bus.js"
+ import { Permission } from "../../permission.js"
+@@ -98,11 +98,17 @@ export const make = Effect.gen(function* () {
+     // Provider and tool fibers retain per-source order without a shared writer queue.
+     // A local execution starts only after its Tool.Called publication completes.
+     let overflowFailure: ProviderErrorEvent | undefined
++    let outputTokensReported = false
+     // Read to the end, not just the finish event, so the next request can reuse this response.
+     const providerStream = llm.stream(input.prepared.request, input.prepared.options).pipe(
+       Stream.runForEach((event) =>
+         Effect.gen(function* () {
+           if (overflowFailure || publisher.hasProviderError()) return
++          if (event.type === "step-finish")
++            outputTokensReported =
++              event.usage?.outputTokens !== undefined &&
++              Number.isFinite(event.usage.outputTokens) &&
++              event.usage.outputTokens >= 0
+           if (
+             LLMEvent.is.providerError(event) &&
+             isContextOverflowFailure(event) &&
+@@ -133,10 +139,16 @@ export const make = Effect.gen(function* () {
+     // Keep the final tool and Step events uninterruptible, even when the work itself is cancelled.
+     return yield* Effect.uninterruptibleMask((restore) =>
+       Effect.gen(function* () {
++        const started = yield* Clock.monotonicTimeNanos
+         const stream = yield* restore(providerStream).pipe(Effect.exit)
++        const ended = yield* Clock.monotonicTimeNanos
+         const streamFailure = Option.getOrUndefined(Exit.findErrorOption(stream))
+         const streamInterrupted = Exit.hasInterrupts(stream)
+-        if (!overflowFailure && publisher.hasStarted()) yield* publisher.streamed()
++        if (!overflowFailure && publisher.hasStarted())
++          yield* publisher.streamed({
++            duration_ms: Number(ended - started) / 1_000_000,
++            output_tokens_reported: outputTokensReported && Exit.isSuccess(stream),
++          })
+         if (streamInterrupted) yield* interruptTools
+         const joined = yield* restore(Fiber.awaitAll(toolRuns.map((run) => run.fiber))).pipe(Effect.exit)
+         if (Exit.isFailure(joined)) yield* interruptTools
+diff --git a/packages/core/test/session-runner.test.ts b/packages/core/test/session-runner.test.ts
+index 69608204ac..3d4cf47268 100644
+--- a/packages/core/test/session-runner.test.ts
++++ b/packages/core/test/session-runner.test.ts
+@@ -3294,6 +3294,7 @@ describe("SessionRunnerLLM", () => {
+       Expected.assistant({ finish: "stop" }, [Expected.text("Done")]),
+     ])
+     const assistant = requireAssistant(context)
++    expect(assistant.timing?.output_tokens_reported).toBe(false)
+     expect(yield* recordedStepSettlementTypes(sessionID, assistant.id)).toEqual([
+       "session.step.started.1",
+       "session.tool.called.1",
+@@ -3327,11 +3328,17 @@ describe("SessionRunnerLLM", () => {
+ 
+   scenario("consumes the full provider stream before recording its boundary and settling local tools", function* (s) {
+     yield* s.admit("Echo this")
++    const request = yield* s.llm.gate
+     const tail = yield* Deferred.make<void>()
+     const complete = yield* Deferred.make<void>()
+     const finished = yield* Deferred.make<void>()
+     yield* s.llm.push(
+-      Stream.fromIterable(TestLLM.tool("call-streamed", "echo", { text: "hello" })).pipe(
++      Stream.fromIterable(
++        TestLLM.complete(
++          { reason: { normalized: "tool-calls" }, usage: { outputTokens: 100, reasoningTokens: 80 } },
++          LLMEvent.toolCall({ id: "call-streamed", name: "echo", input: { text: "hello" } }),
++        ),
++      ).pipe(
+         Stream.concat(
+           Stream.fromEffect(Deferred.succeed(tail, undefined).pipe(Effect.andThen(Deferred.await(complete)))).pipe(
+             Stream.drain,
+@@ -3349,25 +3356,35 @@ describe("SessionRunnerLLM", () => {
+     )
+     const run = yield* Effect.forkChild(s.resume)
+ 
++    yield* request.started
++    yield* TestClock.adjust("2 seconds")
++    yield* request.release
+     yield* tools.started
+     yield* Deferred.await(tail)
+     expect(s.requests).toHaveLength(1)
+     expect(yield* recordedEventTypes(sessionID)).not.toContain("session.step.streamed.1")
+     expect(requireAssistant(yield* s.context).time.completed).toBeUndefined()
++    yield* TestClock.adjust("3 seconds")
+     yield* Deferred.succeed(complete, undefined)
+     yield* Fiber.join(streamed)
+     expect(yield* Deferred.isDone(finished)).toBe(true)
+     const assistant = requireAssistant(yield* s.context)
+     expect(assistant.time.streamed).toBeDefined()
++    const timing = { duration_ms: 5_000, output_tokens_reported: true }
++    expect(assistant.timing).toEqual(timing)
+     expect(assistant.time.completed).toBeUndefined()
+     expect(assistant.content).toMatchObject([{ type: "tool", state: { status: "running" } }])
+ 
++    yield* TestClock.adjust("10 seconds")
+     yield* tools.release
+     yield* Fiber.join(run)
+     const events = yield* recordedEventTypes(sessionID)
+     expect(events.indexOf("session.step.streamed.1")).toBeLessThan(events.indexOf("session.tool.success.2"))
+     expect(events.indexOf("session.tool.success.2")).toBeLessThan(events.indexOf("session.step.ended.1"))
+     expect(events.filter((type) => type === "session.step.streamed.1")).toHaveLength(2)
++    yield* replaySessionProjection(sessionID)
++    const replayed = (yield* s.context).find((message) => message.id === assistant.id)
++    expect(replayed).toMatchObject({ timing, tokens: { output: 20, reasoning: 80 } })
+   })
+ 
+   scenario("restores durable reasoning provider metadata in the next request", function* (s) {
+diff --git a/packages/schema/src/session-event.ts b/packages/schema/src/session-event.ts
+index 6e43890ff8..a30bee0772 100644
+--- a/packages/schema/src/session-event.ts
++++ b/packages/schema/src/session-event.ts
+@@ -339,6 +339,7 @@ export namespace Step {
+     schema: {
+       ...Base,
+       assistantMessageID: SessionMessage.ID,
++      timing: SessionMessage.AssistantTiming.pipe(optional),
+     },
+   })
+   export type Streamed = typeof Streamed.Type
+diff --git a/packages/schema/src/session-message.ts b/packages/schema/src/session-message.ts
+index 7e8ce0482a..534de81b98 100644
+--- a/packages/schema/src/session-message.ts
++++ b/packages/schema/src/session-message.ts
+@@ -208,6 +208,14 @@ export const AssistantRetry = Schema.Struct({
+   error: SessionError.Error,
+ }).annotate({ identifier: "Session.Message.Assistant.Retry" })
+ 
++export interface AssistantTiming extends Schema.Schema.Type<typeof AssistantTiming> {}
++export const AssistantTiming = Schema.Struct({
++  /** Elapsed LLM invocation time, including provider-request preparation and response consumption, before tool settlement. */
++  duration_ms: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
++  /** Normalized token usage otherwise cannot distinguish an unreported count from zero. */
++  output_tokens_reported: Schema.Boolean,
++}).annotate({ identifier: "Session.Message.Assistant.Timing" })
++
+ export interface Assistant extends Schema.Schema.Type<typeof Assistant> {}
+ export const Assistant = Schema.Struct({
+   ...Base,
+@@ -226,6 +234,7 @@ export const Assistant = Schema.Struct({
+   cost: Money.USD.pipe(optional),
+   tokens: TokenUsage.Info.pipe(optional),
+   error: SessionError.Error.pipe(optional),
++  timing: AssistantTiming.pipe(optional),
+   retry: AssistantRetry.pipe(optional),
+   time: Schema.Struct({
+     created: DateTimeUtcFromMillis,
+diff --git a/packages/tui/src/config/index.tsx b/packages/tui/src/config/index.tsx
+index 4d872fa188..1f2c3d2dcf 100644
+--- a/packages/tui/src/config/index.tsx
++++ b/packages/tui/src/config/index.tsx
+@@ -160,7 +160,7 @@ export const Info = Schema.Struct({
+         description: "Show user attachment and tool-result images in the session transcript",
+       }),
+       tps: Schema.optional(Schema.Boolean).annotate({
+-        description: "Show output tokens per second in assistant footers",
++        description: "Show average request throughput (including reasoning) in assistant footers",
+       }),
+       markdown: Schema.optional(Schema.Literals(["source", "rendered"])).annotate({
+         description: "Show Markdown syntax markers or conceal them in rendered transcript content",
+diff --git a/packages/tui/src/routes/session/index.tsx b/packages/tui/src/routes/session/index.tsx
+index 4e95c0235a..7cca7f0a02 100644
+--- a/packages/tui/src/routes/session/index.tsx
++++ b/packages/tui/src/routes/session/index.tsx
+@@ -1966,8 +1966,8 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
+           <Show when={duration() && (ctx.terminal.width < 28 || ctx.terminal.width >= 36)}>
+             <span style={{ fg: theme.text.subdued }}> · {Locale.duration(duration())}</span>
+           </Show>
+-          <Show when={config.data.session.tps && tokensPerSecond()}>
+-            {(value) => <span style={{ fg: theme.text.subdued }}> · {value().toFixed(1)} tok/s</span>}
++          <Show when={config.data.session.tps && tokensPerSecond() !== undefined}>
++            <span style={{ fg: theme.text.subdued }}> · {tokensPerSecond()?.toFixed(1)} tok/s</span>
+           </Show>
+           <Show when={interrupted()}>
+             <span style={{ fg: theme.text.subdued }}> · interrupted</span>
+diff --git a/packages/tui/src/routes/session/rows.ts b/packages/tui/src/routes/session/rows.ts
+index b5765a7b53..24d97d7c29 100644
+--- a/packages/tui/src/routes/session/rows.ts
++++ b/packages/tui/src/routes/session/rows.ts
+@@ -357,13 +357,23 @@ export function turnTokensPerSecond(
+   const steps = messages
+     .slice(start + 1, end)
+     .filter((item): item is SessionMessageAssistant => item.type === "assistant")
+-  const durations = steps.flatMap((step) =>
+-    step.time.streamed === undefined ? [] : [Math.max(0, step.time.streamed - step.time.created)],
+-  )
+-  if (steps.length === 0 || durations.length !== steps.length) return
+-  const output = steps.reduce((total, step) => total + (step.tokens?.output ?? 0), 0)
+-  const duration = durations.reduce((total, value) => total + value, 0)
+-  if (output <= 0 || duration <= 0) return
++  const measured = steps.flatMap((step) => {
++    if (
++      !step.timing?.output_tokens_reported ||
++      !step.tokens ||
++      step.time.completed === undefined ||
++      step.error ||
++      step.timing.duration_ms <= 0 ||
++      step.model.id !== message.model.id ||
++      step.model.providerID !== message.model.providerID ||
++      step.model.variant !== message.model.variant
++    )
++      return []
++    return [{ tokens: step.tokens.output + step.tokens.reasoning, timing: step.timing }]
++  })
++  if (measured.length === 0 || measured.length !== steps.length) return
++  const output = measured.reduce((total, step) => total + step.tokens, 0)
++  const duration = measured.reduce((total, step) => total + step.timing.duration_ms, 0)
+   return output / (duration / 1_000)
+ }
+ 
+diff --git a/packages/tui/test/app-lifecycle.test.tsx b/packages/tui/test/app-lifecycle.test.tsx
+index 969097a121..f280442b9a 100644
+--- a/packages/tui/test/app-lifecycle.test.tsx
++++ b/packages/tui/test/app-lifecycle.test.tsx
+@@ -683,6 +683,7 @@ test("keeps assistant footer metrics current after prepend, same-length refresh,
+                     agent: session.agent,
+                     model: session.model,
+                     time: { created: 7000, streamed: 8000, completed: 9000 },
++                    timing: { duration_ms: 1000, output_tokens_reported: true },
+                     finish: "stop",
+                     cost: 0,
+                     tokens: { ...session.tokens, output: 50 },
+@@ -697,6 +698,7 @@ test("keeps assistant footer metrics current after prepend, same-length refresh,
+               agent: session.agent,
+               model: session.model,
+               time: { created: 2000, streamed: 3000, completed: 5000 },
++              timing: { duration_ms: 1000, output_tokens_reported: true },
+               finish: "stop",
+               cost: 0,
+               tokens: { ...session.tokens, output: 20 },
+diff --git a/packages/tui/test/cli/tui/session-rows.test.ts b/packages/tui/test/cli/tui/session-rows.test.ts
+index 481da35f0e..b529be75fe 100644
+--- a/packages/tui/test/cli/tui/session-rows.test.ts
++++ b/packages/tui/test/cli/tui/session-rows.test.ts
+@@ -25,25 +25,30 @@ test("measures turn duration from the user prompt across assistant steps", () =>
+   expect(turnDuration(final, messages)).toBe(29_000)
+ })
+ 
+-test("measures turn output throughput across model steps without tool time", () => {
++test("measures request throughput including reasoning across steps without tool time", () => {
+   const first = assistant("assistant-1", [])
+   first.time = { created: 8_000, streamed: 10_000, completed: 20_000 }
+   first.tokens = { input: 10, output: 20, reasoning: 5, cache: { read: 0, write: 0 } }
++  first.timing = { duration_ms: 4_000, output_tokens_reported: true }
+   const final = assistant("assistant-2", [])
+   final.time = { created: 27_000, streamed: 30_000, completed: 31_000 }
+   final.tokens = { input: 20, output: 30, reasoning: 10, cache: { read: 0, write: 0 } }
++  final.timing = { duration_ms: 6_000, output_tokens_reported: true }
+   const messages: SessionMessageInfo[] = [
+     { type: "user", id: "user-1", text: "Question", time: { created: 1_000 } },
+     first,
+     final,
+   ]
+ 
+-  expect(turnTokensPerSecond(final, messages)).toBe(10)
++  expect(turnTokensPerSecond(final, messages)).toBe(6.5)
++  first.timing.output_tokens_reported = false
++  expect(turnTokensPerSecond(final, messages)).toBeUndefined()
+ })
+ 
+-test("omits turn throughput when a stream boundary is unavailable", () => {
++test("does not infer request timing for historical messages", () => {
+   const final = assistant("assistant-1", [])
+   final.tokens = { input: 10, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }
++  final.time = { created: 1_000, streamed: 2_000, completed: 3_000 }
+   expect(turnTokensPerSecond(final, [final])).toBeUndefined()
+ })
+ 
+@@ -53,6 +58,7 @@ test.each([false, true])(
+     const step = (id: string, created: number, streamed: number, completed: number, output: number) => ({
+       ...assistant(id, []),
+       time: { created, streamed, completed },
++      timing: { duration_ms: streamed - created, output_tokens_reported: true },
+       tokens: { input: 1, output, reasoning: 2, cache: { read: 0, write: 0 } },
+     })
+     const messages: SessionMessageInfo[] = [
+@@ -79,10 +85,10 @@ test.each([false, true])(
+           : [],
+       ),
+     ).toEqual([
+-      [2_000, 5],
+-      [3_000, 10],
+-      [6_000, 15],
+-      [4_000, 6],
++      [2_000, 7],
++      [3_000, 12],
++      [6_000, 17],
++      [4_000, 7],
+       [0, undefined],
+     ])
+   },
+@@ -95,6 +101,7 @@ test("preserves missing-anchor footer fallbacks without including the absent ass
+   const stored = assistant("stored", [])
+   stored.time = { created: 6_000, streamed: 8_000, completed: 9_000 }
+   stored.tokens = { input: 1, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }
++  stored.timing = { duration_ms: 2_000, output_tokens_reported: true }
+   const input: SessionMessageInfo = { type: "user", id: "input", text: "Question", time: { created: 5_000 } }
+ 
+   expect(turnDuration(absent, [input, stored])).toBe(5_000)
+@@ -111,6 +118,7 @@ test("indexed tail footer calculations do not subscribe to an unrelated history
+       const final = assistant("final", [])
+       final.time = { created: 2_000, streamed: 3_000, completed: 5_000 }
+       final.tokens = { input: 1, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }
++      final.timing = { duration_ms: 1_000, output_tokens_reported: true }
+       const [messages, setMessages] = createStore<SessionMessageInfo[]>([
+         { type: "user", id: "old-input", text: "Old question", time: { created: 0 } },
+         assistant("old-step", []),
+@@ -131,7 +139,11 @@ test("indexed tail footer calculations do not subscribe to an unrelated history
+ 
+       setMessages(2, "time", "created", 1_500)
+       expect(footer()).toEqual([3_500, 20])
+-      setMessages(3, { ...final, time: { ...final.time, streamed: 4_000 }, tokens: { ...final.tokens, output: 60 } })
++      setMessages(3, {
++        ...final,
++        timing: { ...final.timing, duration_ms: 2_000 },
++        tokens: { ...final.tokens, output: 60 },
++      })
+       expect(footer()).toEqual([3_500, 30])
+       expect(runs).toBe(3)
+     } finally {
