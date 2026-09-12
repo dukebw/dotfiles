@@ -267,54 +267,23 @@ index 4d872fa18..1f2c3d2dc 100644
        }),
        markdown: Schema.optional(Schema.Literals(["source", "rendered"])).annotate({
          description: "Show Markdown syntax markers or conceal them in rendered transcript content",
-diff --git a/packages/tui/src/routes/session/index.tsx b/packages/tui/src/routes/session/index.tsx
-index 4e95c0235..7cca7f0a0 100644
---- a/packages/tui/src/routes/session/index.tsx
-+++ b/packages/tui/src/routes/session/index.tsx
-@@ -1966,8 +1966,8 @@ function AssistantFooter(props: { message: SessionMessageAssistant }) {
-           <Show when={duration() && (ctx.terminal.width < 28 || ctx.terminal.width >= 36)}>
-             <span style={{ fg: theme.text.subdued }}> · {Locale.duration(duration())}</span>
-           </Show>
--          <Show when={config.data.session.tps && tokensPerSecond()}>
--            {(value) => <span style={{ fg: theme.text.subdued }}> · {value().toFixed(1)} tok/s</span>}
-+          <Show when={config.data.session.tps && tokensPerSecond() !== undefined}>
-+            <span style={{ fg: theme.text.subdued }}> · {tokensPerSecond()?.toFixed(1)} tok/s</span>
-           </Show>
-           <Show when={interrupted()}>
-             <span style={{ fg: theme.text.subdued }}> · interrupted</span>
 diff --git a/packages/tui/src/routes/session/rows.ts b/packages/tui/src/routes/session/rows.ts
-index b5765a7b5..d812aeb8d 100644
+index b5765a7b5..04368b723 100644
 --- a/packages/tui/src/routes/session/rows.ts
 +++ b/packages/tui/src/routes/session/rows.ts
-@@ -357,13 +357,23 @@ export function turnTokensPerSecond(
-   const steps = messages
+@@ -358,10 +358,10 @@ export function turnTokensPerSecond(
      .slice(start + 1, end)
      .filter((item): item is SessionMessageAssistant => item.type === "assistant")
--  const durations = steps.flatMap((step) =>
+   const durations = steps.flatMap((step) =>
 -    step.time.streamed === undefined ? [] : [Math.max(0, step.time.streamed - step.time.created)],
--  )
-+  const durations = steps.flatMap((step) => {
-+    if (
-+      step.time.requestDurationMs === undefined ||
-+      !step.tokens ||
-+      step.time.completed === undefined ||
-+      step.error ||
-+      step.time.requestDurationMs <= 0 ||
-+      step.model.id !== message.model.id ||
-+      step.model.providerID !== message.model.providerID ||
-+      step.model.variant !== message.model.variant
-+    )
-+      return []
-+    return [step.time.requestDurationMs]
-+  })
++    step.time.requestDurationMs === undefined ? [] : [step.time.requestDurationMs],
+   )
    if (steps.length === 0 || durations.length !== steps.length) return
 -  const output = steps.reduce((total, step) => total + (step.tokens?.output ?? 0), 0)
 +  const output = steps.reduce((total, step) => total + (step.tokens?.output ?? 0) + (step.tokens?.reasoning ?? 0), 0)
    const duration = durations.reduce((total, value) => total + value, 0)
--  if (output <= 0 || duration <= 0) return
+   if (output <= 0 || duration <= 0) return
    return output / (duration / 1_000)
- }
- 
 diff --git a/packages/tui/test/app-lifecycle.test.tsx b/packages/tui/test/app-lifecycle.test.tsx
 index 969097a12..e504d2427 100644
 --- a/packages/tui/test/app-lifecycle.test.tsx
@@ -338,26 +307,27 @@ index 969097a12..e504d2427 100644
                cost: 0,
                tokens: { ...session.tokens, output: 20 },
 diff --git a/packages/tui/test/cli/tui/session-rows.test.ts b/packages/tui/test/cli/tui/session-rows.test.ts
-index 481da35f0..a60f62b54 100644
+index 481da35f0..acbe46ae5 100644
 --- a/packages/tui/test/cli/tui/session-rows.test.ts
 +++ b/packages/tui/test/cli/tui/session-rows.test.ts
-@@ -25,12 +25,12 @@ test("measures turn duration from the user prompt across assistant steps", () =>
+@@ -25,12 +25,13 @@ test("measures turn duration from the user prompt across assistant steps", () =>
    expect(turnDuration(final, messages)).toBe(29_000)
  })
  
 -test("measures turn output throughput across model steps without tool time", () => {
-+test("measures request throughput including reasoning across steps without tool time", () => {
++test("measures request throughput including reasoning across model changes without tool time", () => {
    const first = assistant("assistant-1", [])
 -  first.time = { created: 8_000, streamed: 10_000, completed: 20_000 }
 +  first.time = { created: 8_000, streamed: 10_000, completed: 20_000, requestDurationMs: 4_000 }
    first.tokens = { input: 10, output: 20, reasoning: 5, cache: { read: 0, write: 0 } }
    const final = assistant("assistant-2", [])
 -  final.time = { created: 27_000, streamed: 30_000, completed: 31_000 }
++  final.model = { id: "other-model", providerID: "other-provider", variant: "other-variant" }
 +  final.time = { created: 27_000, streamed: 30_000, completed: 31_000, requestDurationMs: 6_000 }
    final.tokens = { input: 20, output: 30, reasoning: 10, cache: { read: 0, write: 0 } }
    const messages: SessionMessageInfo[] = [
      { type: "user", id: "user-1", text: "Question", time: { created: 1_000 } },
-@@ -38,12 +38,15 @@ test("measures turn output throughput across model steps without tool time", ()
+@@ -38,12 +39,15 @@ test("measures turn output throughput across model steps without tool time", ()
      final,
    ]
  
@@ -375,7 +345,7 @@ index 481da35f0..a60f62b54 100644
    expect(turnTokensPerSecond(final, [final])).toBeUndefined()
  })
  
-@@ -52,7 +55,7 @@ test.each([false, true])(
+@@ -52,7 +56,7 @@ test.each([false, true])(
    (indexed) => {
      const step = (id: string, created: number, streamed: number, completed: number, output: number) => ({
        ...assistant(id, []),
@@ -384,7 +354,7 @@ index 481da35f0..a60f62b54 100644
        tokens: { input: 1, output, reasoning: 2, cache: { read: 0, write: 0 } },
      })
      const messages: SessionMessageInfo[] = [
-@@ -79,10 +82,10 @@ test.each([false, true])(
+@@ -79,10 +83,10 @@ test.each([false, true])(
            : [],
        ),
      ).toEqual([
@@ -399,7 +369,7 @@ index 481da35f0..a60f62b54 100644
        [0, undefined],
      ])
    },
-@@ -93,7 +96,7 @@ test("preserves missing-anchor footer fallbacks without including the absent ass
+@@ -93,7 +97,7 @@ test("preserves missing-anchor footer fallbacks without including the absent ass
    absent.time = { created: 8_000, streamed: 9_000, completed: 10_000 }
    absent.tokens = { input: 1, output: 900, reasoning: 0, cache: { read: 0, write: 0 } }
    const stored = assistant("stored", [])
@@ -408,7 +378,7 @@ index 481da35f0..a60f62b54 100644
    stored.tokens = { input: 1, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }
    const input: SessionMessageInfo = { type: "user", id: "input", text: "Question", time: { created: 5_000 } }
  
-@@ -109,7 +112,7 @@ test("indexed tail footer calculations do not subscribe to an unrelated history
+@@ -109,7 +113,7 @@ test("indexed tail footer calculations do not subscribe to an unrelated history
    createRoot((dispose) => {
      try {
        const final = assistant("final", [])
@@ -417,7 +387,7 @@ index 481da35f0..a60f62b54 100644
        final.tokens = { input: 1, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }
        const [messages, setMessages] = createStore<SessionMessageInfo[]>([
          { type: "user", id: "old-input", text: "Old question", time: { created: 0 } },
-@@ -131,7 +134,11 @@ test("indexed tail footer calculations do not subscribe to an unrelated history
+@@ -131,7 +135,11 @@ test("indexed tail footer calculations do not subscribe to an unrelated history
  
        setMessages(2, "time", "created", 1_500)
        expect(footer()).toEqual([3_500, 20])
