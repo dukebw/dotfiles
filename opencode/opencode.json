@@ -1,5 +1,5 @@
 {
-  "model": "openai/gpt-6-astra-fast",
+  "model": "openai/gpt-6-astra",
   "$schema": "https://opencode.ai/config.json",
   "plugins": ["./plugins/notify.ts"],
   "mcp": {
@@ -101,6 +101,29 @@
             "input": 900000,
             "output": 131072
           }
+        },
+        "deepseek-ai/DeepSeek-V4.1-Flash": {
+          "name": "DeepSeek V4.1 Flash",
+          "family": "deepseek-flash",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content"
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 32768
+          },
+          "variants": [
+            { "id": "none", "settings": { "reasoningEffort": "none" } },
+            { "id": "low", "settings": { "reasoningEffort": "low" } },
+            { "id": "high", "settings": { "reasoningEffort": "high" } },
+            { "id": "xhigh", "settings": { "reasoningEffort": "xhigh" } },
+            { "id": "max", "settings": { "reasoningEffort": "max" } }
+          ]
         }
       }
     },
@@ -158,10 +181,10 @@
   ],
   "agents": {
     "build": {
-      "model": "openai/gpt-6-astra-fast#max"
+      "model": "openai/gpt-6-astra#xhigh"
     },
-    "explore": { "model": "openai/gpt-6-astra-fast#high" },
-    "general": { "model": "openai/gpt-6-astra-fast#high" }
+    "explore": { "model": "baseten/deepseek-ai/DeepSeek-V4.1-Flash#max" },
+    "general": { "model": "baseten/deepseek-ai/DeepSeek-V4.1-Flash#max" }
   },
   "lsp": {
     "pyright": {
