@@ -3,8 +3,8 @@
 set -euo pipefail
 umask 077
 
-readonly package="@opencode-ai/cli"
-readonly channel="beta"
+readonly package="@opencode/cli"
+readonly channel="latest"
 readonly root="$HOME/.local/share/opencode2"
 readonly versions_dir="$root/versions"
 readonly current_link="$root/current"
@@ -69,7 +69,8 @@ binary_version() {
 }
 
 wait_for_health() {
-  local attempt code
+  local expected_version="$1"
+  local attempt code response
 
   for attempt in {1..30}; do
     code=$(
@@ -77,9 +78,16 @@ wait_for_health() {
         --silent \
         --output /dev/null \
         --write-out '%{http_code}' \
-        http://127.0.0.1:4096/api/health || true
+        http://127.0.0.1:4096/api/status || true
     )
-    [[ "$code" == "401" ]] && return 0
+    if [[ "$code" == "401" ]]; then
+      response="$("$HOME/.local/bin/opencode" api get /api/status 2>>"$log_file" ||
+        "$HOME/.local/bin/opencode" api get /api/health 2>>"$log_file")" &&
+        "$node_bin" -e '
+          const status = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+          process.exit(status.version === process.argv[1] && status.pid > 0 ? 0 : 1);
+        ' "$expected_version" <<<"$response" && return 0
+    fi
     sleep 1
   done
   return 1
@@ -117,6 +125,7 @@ current_version=""
 if [[ -x "$current_link/bin/opencode2" ]]; then
   current_version="$(binary_version "$current_link/bin/opencode2")"
 fi
+log "Resolved $package@$release_selector to $latest"
 
 official_dir="$versions_dir/$latest"
 if [[ ! -x "$official_dir/bin/opencode2" ]]; then
@@ -134,7 +143,7 @@ if [[ ! -x "$official_dir/bin/opencode2" ]]; then
   fi
 
   if ! "$node_bin" \
-    "$install_dir/lib/node_modules/@opencode-ai/cli/postinstall.mjs" \
+    "$install_dir/lib/node_modules/$package/postinstall.mjs" \
     >>"$log_file" 2>&1; then
     log "OpenCode update failed while preparing the platform binary"
     exit 1
@@ -186,7 +195,7 @@ fi
 if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
   log "Restarting the OpenCode server"
   healthy=false
-  if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health; then
+  if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health "$desired_version"; then
     healthy=true
   elif [[ "$desired_version" != "$latest" ]]; then
     log "Patched OpenCode failed health checks; trying official OpenCode $latest"
@@ -195,7 +204,7 @@ if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
     activate "versions/$latest"
     desired_version="$latest"
     version_dir="$official_dir"
-    if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health; then
+    if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health "$desired_version"; then
       healthy=true
     fi
   fi
@@ -203,7 +212,7 @@ if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
     if [[ -n "$previous_target" && -x "$root/$previous_target/bin/opencode2" ]]; then
       log "OpenCode $latest failed health checks; rolling back"
       activate "$previous_target"
-      if ! "$HOME/.local/bin/opencode" service restart >/dev/null || ! wait_for_health; then
+      if ! "$HOME/.local/bin/opencode" service restart >/dev/null || ! wait_for_health "$current_version"; then
         log "OpenCode rollback failed health checks"
       fi
     else

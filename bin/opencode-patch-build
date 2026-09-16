@@ -54,6 +54,14 @@ def release_commit(release):
     cache = ROOT / "release-sources" / f"{release}.json"
     if cache.is_file():
         commit = json.loads(cache.read_text())["commit"]
+    elif re.fullmatch(r"\d+\.\d+\.\d+", release):
+        metadata = json.loads(run([
+            "curl", "--fail", "--silent", "--show-error", "--max-time", "30",
+            "https://opencode.ai/update/api/latest/cli/npm",
+        ], capture=True).stdout)
+        if metadata.get("version") != release or metadata.get("metadata", {}).get("package") != "@opencode/cli":
+            raise ValueError(f"Update service does not identify the source of {release}")
+        commit = metadata["metadata"]["github"]["sha"]
     else:
         match = re.fullmatch(r"0\.0\.0-beta-(\d+)(?:\.\d+)?", release)
         if not match:
@@ -136,7 +144,8 @@ def select(release):
             return release
         run(["git", "apply", "--index", "-"], cwd=worktree, input=patch)
         bun = bun_for(worktree)
-        env = {**os.environ, "PATH": f"{bun.parent}:{os.environ['PATH']}", "OPENCODE_CHANNEL": "beta", "OPENCODE_VERSION": version}
+        env = {**os.environ, "PATH": f"{bun.parent}:{os.environ['PATH']}",
+               "OPENCODE_CHANNEL": "beta" if release.startswith("0.0.0-beta-") else "latest", "OPENCODE_VERSION": version}
         log(f"testing and building {version} with {bun}")
         run([bun, "install", "--frozen-lockfile"], cwd=worktree, env=env)
         run([bun, "run", "check:generated"], cwd=worktree / "packages/client", env=env)
@@ -145,7 +154,7 @@ def select(release):
         run([bun, "test", "test/session-runner.test.ts", "test/session-projector.test.ts", "test/session-step.test.ts", "--timeout", "30000", "--only-failures"], cwd=worktree / "packages/core", env=env)
         run([bun, "test", "test/cli/tui/session-rows.test.ts", "test/app-lifecycle.test.tsx", "--timeout", "30000", "--only-failures"], cwd=worktree / "packages/tui", env=env)
         run([bun, "run", "build", "--single", "--skip-install"], cwd=worktree / "packages/cli", env=env)
-        binaries = list((worktree / "packages/cli/dist").glob("cli-*/bin/opencode2"))
+        binaries = list((worktree / "packages/cli/dist").glob("cli-*/bin/opencode"))
         if len(binaries) != 1 or binary_version(binaries[0]) != version:
             raise ValueError("Native build did not produce the expected version")
         with tempfile.TemporaryDirectory(prefix=".patch-smoke-", dir=ROOT) as smoke:
@@ -154,8 +163,8 @@ def select(release):
             isolated.update(OPENCODE_DB=f"{smoke}/smoke.db", OPENCODE_CONFIG_DIR=f"{smoke}/config/opencode",
                             OPENCODE_CONFIG_PROJECT_DISABLE="1", OPENCODE_DISABLE_AUTOUPDATE="1",
                             OPENCODE_DISABLE_MODELS_FETCH="1", OPENCODE_DISABLE_FFF="1")
-            health = json.loads(run([binaries[0], "api", "--standalone", "get", "/api/health"], cwd=smoke, env=isolated, capture=True).stdout)
-            if not health.get("healthy") or health.get("version") != version:
+            health = json.loads(run([binaries[0], "api", "--standalone", "get", "/api/status"], cwd=smoke, env=isolated, capture=True).stdout)
+            if health.get("version") != version or not health.get("pid"):
                 raise ValueError("Patched binary failed isolated health check")
         destination.parent.mkdir(parents=True, exist_ok=True)
         stage = Path(tempfile.mkdtemp(prefix=".patch-", dir=destination.parent))

@@ -209,7 +209,7 @@ Verify the discovered service address and PID:
 
 ```zsh
 opencode service status
-opencode api get /api/health
+opencode api get /api/status
 ```
 
 ## OpenCode 2 service model
@@ -273,9 +273,9 @@ tail -f "$HOME/Library/Logs/opencode-update.log"
 
 The availability monitor uses `KeepAlive` and `caffeinate -i`. It restarts
 the native service after failure and prevents idle system sleep even on battery.
-The update LaunchAgent checks `@opencode-ai/cli@beta` daily at 04:00. Its
+The update LaunchAgent checks `@opencode/cli@latest` daily at 04:00. Its
 `opencode-patch-build` helper tries the saved `opencode/patches/request-throughput.patch`
-against that release's exact source commit in a disposable worktree under `~/work/`.
+against that release's exact source commit from the official update service in a disposable worktree under `~/work/`.
 Clean patches must pass generated-client checks, typechecks, tests, a native build,
 and an isolated private-server health check. Release/patch metadata caches successful
 builds and keeps the current patched installation when no new release or patch exists.
@@ -296,9 +296,9 @@ Check in this order:
 launchctl print gui/$UID/ai.opencode.web
 launchctl print gui/$UID/ai.opencode.update
 opencode service status
-opencode api get /api/health
+opencode api get /api/status
 lsof -nP -iTCP:4096 -sTCP:LISTEN
-curl -o /dev/null -sS -w '%{http_code}\n' http://127.0.0.1:4096/api/health
+curl -o /dev/null -sS -w '%{http_code}\n' http://127.0.0.1:4096/api/status
 curl -fsSL http://go/here-now-llm
 tailscale serve status
 tailscale status

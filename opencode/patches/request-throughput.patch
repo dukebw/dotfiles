@@ -1,8 +1,8 @@
 diff --git a/packages/client/src/effect/api/api.ts b/packages/client/src/effect/api/api.ts
-index c926159b2..464c866d4 100644
+index 2bce924ee..69413dd63 100644
 --- a/packages/client/src/effect/api/api.ts
 +++ b/packages/client/src/effect/api/api.ts
-@@ -733,6 +733,7 @@ export type SessionLogOutput =
+@@ -853,6 +853,7 @@ export type SessionLogOutput =
                readonly reasoning: number
                readonly cache: { readonly read: number; readonly write: number }
              }
@@ -11,10 +11,10 @@ index c926159b2..464c866d4 100644
              readonly files?: ReadonlyArray<RelativePath> | undefined
            }
 diff --git a/packages/client/src/promise/generated/types.ts b/packages/client/src/promise/generated/types.ts
-index 14409ac5c..544db17e1 100644
+index aacaea0d8..ee2493cd8 100644
 --- a/packages/client/src/promise/generated/types.ts
 +++ b/packages/client/src/promise/generated/types.ts
-@@ -1235,6 +1235,7 @@ export type SessionStepEnded = {
+@@ -1248,6 +1248,7 @@ export type SessionStepEnded = {
      providerState?: SessionMessageProviderState1
      cost: MoneyUSD
      tokens: TokenUsageInfo
@@ -22,7 +22,7 @@ index 14409ac5c..544db17e1 100644
      snapshot?: string
      files?: Array<string>
    }
-@@ -2167,7 +2168,7 @@ export type SessionInboxEnqueued = {
+@@ -2184,7 +2185,7 @@ export type SessionInboxEnqueued = {
  export type SessionMessageAssistant = {
    id: string
    metadata?: { [x: string]: JsonValue }
@@ -31,7 +31,7 @@ index 14409ac5c..544db17e1 100644
    type: "assistant"
    agent: string
    model: ModelRef
-@@ -3057,7 +3058,12 @@ export type SessionImportInput = {
+@@ -3058,7 +3059,12 @@ export type SessionImportInput = {
        | {
            readonly id: string
            readonly metadata?: { readonly [x: string]: JsonValue }
@@ -45,7 +45,7 @@ index 14409ac5c..544db17e1 100644
            readonly type: "assistant"
            readonly agent: string
            readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
-@@ -3367,7 +3373,12 @@ export type SessionImportInput = {
+@@ -3375,7 +3381,12 @@ export type SessionImportInput = {
        | {
            readonly id: string
            readonly metadata?: { readonly [x: string]: JsonValue }
@@ -59,7 +59,7 @@ index 14409ac5c..544db17e1 100644
            readonly type: "assistant"
            readonly agent: string
            readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
-@@ -3677,7 +3688,12 @@ export type SessionImportInput = {
+@@ -3692,7 +3703,12 @@ export type SessionImportInput = {
        | {
            readonly id: string
            readonly metadata?: { readonly [x: string]: JsonValue }
@@ -74,10 +74,10 @@ index 14409ac5c..544db17e1 100644
            readonly agent: string
            readonly model: { readonly id: string; readonly providerID: string; readonly variant?: string }
 diff --git a/packages/client/src/solid/data.ts b/packages/client/src/solid/data.ts
-index 83c6eeb32..e00dea6d9 100644
+index fe8c435cc..beef94b47 100644
 --- a/packages/client/src/solid/data.ts
 +++ b/packages/client/src/solid/data.ts
-@@ -846,6 +846,7 @@ export function createData(config: CreateDataInput) {
+@@ -848,6 +848,7 @@ export function createData(config: CreateDataInput) {
              existing.rawFinish = undefined
              existing.providerState = undefined
              existing.time.streamed = undefined
@@ -85,7 +85,7 @@ index 83c6eeb32..e00dea6d9 100644
              existing.time.completed = undefined
              if (event.data.snapshot) existing.snapshot = { ...existing.snapshot, start: event.data.snapshot }
              return
-@@ -880,6 +881,7 @@ export function createData(config: CreateDataInput) {
+@@ -882,6 +883,7 @@ export function createData(config: CreateDataInput) {
            assistant.providerState = event.data.providerState
            assistant.cost = event.data.cost
            assistant.tokens = event.data.tokens
@@ -94,10 +94,10 @@ index 83c6eeb32..e00dea6d9 100644
          })
          return
 diff --git a/packages/core/src/session/message-updater.ts b/packages/core/src/session/message-updater.ts
-index e78b656ab..895232600 100644
+index 09998dcdf..cc1aad273 100644
 --- a/packages/core/src/session/message-updater.ts
 +++ b/packages/core/src/session/message-updater.ts
-@@ -207,6 +207,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
+@@ -224,6 +224,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
                  draft.rawFinish = undefined
                  draft.providerState = undefined
                  draft.time.streamed = undefined
@@ -105,7 +105,7 @@ index e78b656ab..895232600 100644
                  draft.time.completed = undefined
                  if (event.data.snapshot) draft.snapshot = { ...draft.snapshot, start: event.data.snapshot }
                }),
-@@ -248,6 +249,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
+@@ -265,6 +266,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
            draft.providerState = castDraft(event.data.providerState)
            draft.cost = event.data.cost
            draft.tokens = event.data.tokens
@@ -164,10 +164,10 @@ index b43def2c3..7ba344810 100644
                files,
              })
 diff --git a/packages/core/test/session-runner.test.ts b/packages/core/test/session-runner.test.ts
-index 69608204a..249484005 100644
+index 196cb3728..88d0c55c4 100644
 --- a/packages/core/test/session-runner.test.ts
 +++ b/packages/core/test/session-runner.test.ts
-@@ -3294,6 +3294,7 @@ describe("SessionRunnerLLM", () => {
+@@ -3329,6 +3329,7 @@ describe("SessionRunnerLLM", () => {
        Expected.assistant({ finish: "stop" }, [Expected.text("Done")]),
      ])
      const assistant = requireAssistant(context)
@@ -175,7 +175,7 @@ index 69608204a..249484005 100644
      expect(yield* recordedStepSettlementTypes(sessionID, assistant.id)).toEqual([
        "session.step.started.1",
        "session.tool.called.1",
-@@ -3327,11 +3328,17 @@ describe("SessionRunnerLLM", () => {
+@@ -3362,11 +3363,17 @@ describe("SessionRunnerLLM", () => {
  
    scenario("consumes the full provider stream before recording its boundary and settling local tools", function* (s) {
      yield* s.admit("Echo this")
@@ -194,7 +194,7 @@ index 69608204a..249484005 100644
          Stream.concat(
            Stream.fromEffect(Deferred.succeed(tail, undefined).pipe(Effect.andThen(Deferred.await(complete)))).pipe(
              Stream.drain,
-@@ -3349,25 +3356,34 @@ describe("SessionRunnerLLM", () => {
+@@ -3384,25 +3391,34 @@ describe("SessionRunnerLLM", () => {
      )
      const run = yield* Effect.forkChild(s.resume)
  
@@ -230,7 +230,7 @@ index 69608204a..249484005 100644
  
    scenario("restores durable reasoning provider metadata in the next request", function* (s) {
 diff --git a/packages/schema/src/session-event.ts b/packages/schema/src/session-event.ts
-index 6e43890ff..d55469e93 100644
+index bbf7edcb3..7488efa19 100644
 --- a/packages/schema/src/session-event.ts
 +++ b/packages/schema/src/session-event.ts
 @@ -354,6 +354,7 @@ export namespace Step {
@@ -242,7 +242,7 @@ index 6e43890ff..d55469e93 100644
        files: Schema.Array(RelativePath).pipe(optional),
      },
 diff --git a/packages/schema/src/session-message.ts b/packages/schema/src/session-message.ts
-index 7e8ce0482..1f47a1c72 100644
+index 55ef74558..6ec38e8b7 100644
 --- a/packages/schema/src/session-message.ts
 +++ b/packages/schema/src/session-message.ts
 @@ -232,6 +232,8 @@ export const Assistant = Schema.Struct({
@@ -255,10 +255,10 @@ index 7e8ce0482..1f47a1c72 100644
  }).annotate({ identifier: "Session.Message.Assistant" })
  
 diff --git a/packages/tui/src/config/index.tsx b/packages/tui/src/config/index.tsx
-index 4d872fa18..1f2c3d2dc 100644
+index c0a90585a..6c0ed93f4 100644
 --- a/packages/tui/src/config/index.tsx
 +++ b/packages/tui/src/config/index.tsx
-@@ -160,7 +160,7 @@ export const Info = Schema.Struct({
+@@ -159,7 +159,7 @@ export const Info = Schema.Struct({
          description: "Show user attachment and tool-result images in the session transcript",
        }),
        tps: Schema.optional(Schema.Boolean).annotate({
@@ -268,10 +268,10 @@ index 4d872fa18..1f2c3d2dc 100644
        markdown: Schema.optional(Schema.Literals(["source", "rendered"])).annotate({
          description: "Show Markdown syntax markers or conceal them in rendered transcript content",
 diff --git a/packages/tui/src/routes/session/rows.ts b/packages/tui/src/routes/session/rows.ts
-index b5765a7b5..04368b723 100644
+index 56ed3e0ba..ba46d0a06 100644
 --- a/packages/tui/src/routes/session/rows.ts
 +++ b/packages/tui/src/routes/session/rows.ts
-@@ -358,10 +358,10 @@ export function turnTokensPerSecond(
+@@ -375,10 +375,10 @@ export function turnTokensPerSecond(
      .slice(start + 1, end)
      .filter((item): item is SessionMessageAssistant => item.type === "assistant")
    const durations = steps.flatMap((step) =>
@@ -285,7 +285,7 @@ index b5765a7b5..04368b723 100644
    if (output <= 0 || duration <= 0) return
    return output / (duration / 1_000)
 diff --git a/packages/tui/test/app-lifecycle.test.tsx b/packages/tui/test/app-lifecycle.test.tsx
-index 969097a12..e504d2427 100644
+index 5e3b4fa31..3c7661a8a 100644
 --- a/packages/tui/test/app-lifecycle.test.tsx
 +++ b/packages/tui/test/app-lifecycle.test.tsx
 @@ -682,7 +682,7 @@ test("keeps assistant footer metrics current after prepend, same-length refresh,
@@ -307,7 +307,7 @@ index 969097a12..e504d2427 100644
                cost: 0,
                tokens: { ...session.tokens, output: 20 },
 diff --git a/packages/tui/test/cli/tui/session-rows.test.ts b/packages/tui/test/cli/tui/session-rows.test.ts
-index 481da35f0..acbe46ae5 100644
+index 2fa486039..89e8b92dd 100644
 --- a/packages/tui/test/cli/tui/session-rows.test.ts
 +++ b/packages/tui/test/cli/tui/session-rows.test.ts
 @@ -25,12 +25,13 @@ test("measures turn duration from the user prompt across assistant steps", () =>
@@ -400,3 +400,12 @@ index 481da35f0..acbe46ae5 100644
        expect(footer()).toEqual([3_500, 30])
        expect(runs).toBe(3)
      } finally {
+@@ -276,7 +284,7 @@ test("closes turn usage on the idle marker so steered steps share one footer", (
+ test("measures a marker-era turn from its first prompt across steers", () => {
+   const step = (id: string, created: number, streamed: number, completed: number, output: number) => ({
+     ...assistant(id, []),
+-    time: { created, streamed, completed },
++    time: { created, streamed, completed, requestDurationMs: streamed - created },
+     tokens: { input: 1, output, reasoning: 0, cache: { read: 0, write: 0 } },
+   })
+   const messages: SessionMessageInfo[] = [
