@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Open a GitHub review and its source diff in a Zellij tab."""
+
+import argparse
+import contextlib
+import fcntl
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+
+
+PROJECT = Path("mp/baseten_dynamo/cache_aware_routing_trtllm")
+STACK_PATHS = (PROJECT / "docker/sglang/patches", PROJECT / "versions/sglang.env")
+BASE_REF = "refs/pr-review/base"
+HEAD_REF = "refs/pr-review/head"
+
+
+def run(*args, cwd=None, env=None):
+    result = subprocess.run(
+        [str(arg) for arg in args],
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"{shlex.join(str(arg) for arg in args)} failed:\n"
+            f"{result.stdout}{result.stderr}"
+        )
+    return result.stdout.strip()
+
+
+def git(directory, *args):
+    return run("git", "-C", directory, *args)
+
+
+@contextlib.contextmanager
+def step(message):
+    started = time.monotonic()
+    print(f"{message}...", flush=True)
+    yield
+    print(f"{message}: done ({time.monotonic() - started:.1f}s)", flush=True)
+
+
+def require_clean(directory, expected_head):
+    if git(directory, "status", "--porcelain"):
+        raise RuntimeError(
+            f"Preserve local changes in {directory} before reopening this review"
+        )
+    if git(directory, "rev-parse", "HEAD") != expected_head:
+        raise RuntimeError(
+            f"HEAD changed in {directory}; preserve that work before refreshing the review"
+        )
+
+
+def save_state(path, state):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, indent=2) + "\n")
+    temporary.replace(path)
+
+
+def prepare_worktree(checkout, destination, repo, head):
+    if destination.exists():
+        metadata = (
+            Path(git(destination, "rev-parse", "--absolute-git-dir")) / "pr-review"
+        )
+        state_path = metadata / "state.json"
+        if not state_path.exists():
+            raise RuntimeError(
+                f"{destination} already exists and was not created by review-pr"
+            )
+        state = json.loads(state_path.read_text())
+        if state["repo"] != repo:
+            raise RuntimeError(f"{destination} belongs to {state['repo']}, not {repo}")
+        require_clean(destination, state["head"])
+    else:
+        git(checkout, "worktree", "add", "--detach", destination, head)
+        metadata = (
+            Path(git(destination, "rev-parse", "--absolute-git-dir")) / "pr-review"
+        )
+        metadata.mkdir()
+        state_path = metadata / "state.json"
+        state = {"repo": repo, "head": head}
+        save_state(state_path, state)
+    return state_path, state
+
+
+def snapshot(checkout, revision, destination):
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "archive",
+            revision,
+            *(str(p) for p in STACK_PATHS),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"Cannot read SGLang stack at {revision}: {result.stderr.decode()}"
+        )
+    with tarfile.open(fileobj=io.BytesIO(result.stdout)) as contents:
+        contents.extractall(destination, filter="data")
+    project = destination / PROJECT
+    pin = re.search(
+        r"^ENGINE_SHA=(\S+)$", (project / "versions/sglang.env").read_text(), re.M
+    )
+    if pin is None or not re.fullmatch(r"[0-9a-f]{7,40}|v[0-9][\w.-]*", pin[1]):
+        raise RuntimeError(
+            f"Expected an SGLang release tag or commit in {revision}:versions/sglang.env"
+        )
+    return project, pin[1]
+
+
+def cache_pin(cache, pin):
+    if not cache.exists():
+        run("git", "init", "--bare", cache)
+        git(
+            cache,
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/sgl-project/sglang.git",
+        )
+    if git(cache, "rev-parse", "--is-bare-repository") != "true":
+        raise RuntimeError(f"Expected a bare SGLang cache at {cache}")
+    found = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(cache),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{pin}^{{commit}}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if found.returncode:
+        with step(f"Fetching SGLang {pin}"):
+            git(cache, "fetch", "--depth=1", "origin", pin)
+            commit = git(cache, "rev-parse", "FETCH_HEAD^{commit}")
+            git(cache, "update-ref", f"refs/heads/pins/{commit}", commit)
+            if pin.startswith("v"):
+                git(cache, "update-ref", f"refs/tags/{pin}", commit)
+
+
+def init_source(helper, project, source, cache):
+    # Use the installed development helper, not executable code from the PR.
+    run(
+        sys.executable,
+        "-B",
+        "-c",
+        "import runpy,sys; from pathlib import Path; "
+        "helper=runpy.run_path(sys.argv.pop(1)); "
+        "project=Path(sys.argv.pop(1)); helper['main'](project)",
+        helper,
+        project,
+        "init_sglang",
+        env={
+            **os.environ,
+            "SGLANG_SOURCE_DIR": str(source),
+            "SGLANG_GIT_URL": str(cache),
+        },
+    )
+
+
+def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache):
+    source = worktree / PROJECT / "sglang"
+    if source.exists():
+        if "source_head" not in state:
+            raise RuntimeError(
+                f"{source} already exists and was not created by review-pr"
+            )
+        require_clean(source, state["source_head"])
+        if state.get("source_revisions") == [baseline, head]:
+            return source
+    helper = checkout / PROJECT / "bin/sglang_dev.py"
+    with step("Applying baseline and proposed SGLang stacks"):
+        with tempfile.TemporaryDirectory(
+            prefix="sglang-", dir=state_path.parent
+        ) as temporary:
+            scratch = Path(temporary)
+            before, old_pin = snapshot(checkout, baseline, scratch / "base")
+            after, new_pin = snapshot(checkout, head, scratch / "head")
+            cache_pin(cache, old_pin)
+            cache_pin(cache, new_pin)
+            print(f"SGLang source comparison: {old_pin} → {new_pin}", flush=True)
+            base_source, head_source = scratch / "base-source", scratch / "head-source"
+            init_source(helper, before, base_source, cache)
+            init_source(helper, after, head_source, cache)
+            source_head = git(head_source, "rev-parse", "HEAD")
+            git(
+                head_source,
+                "fetch",
+                "--no-tags",
+                "--update-shallow",
+                base_source,
+                f"HEAD:{BASE_REF}",
+            )
+            git(head_source, "update-ref", HEAD_REF, source_head)
+            if source.exists():
+                git(
+                    source,
+                    "fetch",
+                    "--no-tags",
+                    "--update-shallow",
+                    head_source,
+                    f"+{BASE_REF}:{BASE_REF}",
+                    f"+{HEAD_REF}:{HEAD_REF}",
+                )
+            else:
+                source.parent.mkdir(parents=True, exist_ok=True)
+                head_source.rename(source)
+            git(source, "checkout", "--detach", HEAD_REF)
+            state.update(source_head=source_head, source_revisions=[baseline, head])
+            save_state(state_path, state)
+    return source
+
+
+def prepare(repo, number, work):
+    name = repo.split("/")[1]
+    checkout, worktree = work / name, work / f"{name}-pr{number}"
+    if not checkout.exists():
+        with step(f"Cloning {repo}"):
+            run("gh", "repo", "clone", repo, checkout)
+    with step(f"Fetching {repo}#{number}"):
+        pr = json.loads(
+            run(
+                "gh",
+                "pr",
+                "view",
+                number,
+                "--repo",
+                repo,
+                "--json",
+                "headRefOid,baseRefOid",
+            )
+        )
+        head = pr["headRefOid"]
+        git(
+            checkout,
+            "fetch",
+            "--no-tags",
+            f"https://github.com/{repo}.git",
+            f"refs/pull/{number}/head",
+            pr["baseRefOid"],
+        )
+        if git(checkout, "rev-parse", "FETCH_HEAD") != head:
+            raise RuntimeError("The PR changed during fetch; run review-pr again")
+        baseline = git(checkout, "merge-base", pr["baseRefOid"], head)
+    state_path, state = prepare_worktree(checkout, worktree, repo, head)
+    source = worktree / PROJECT / "sglang"
+    if source.exists() and "source_head" in state:
+        require_clean(source, state["source_head"])
+    git(worktree, "checkout", "--detach", head)
+    state["head"] = head
+    save_state(state_path, state)
+    changed_stack = repo == "basetenlabs/baseten" and git(
+        checkout,
+        "diff",
+        "--name-only",
+        baseline,
+        head,
+        "--",
+        *STACK_PATHS,
+    )
+    if changed_stack:
+        source = prepare_sglang(
+            checkout,
+            worktree,
+            baseline,
+            head,
+            state_path,
+            state,
+            work / "sglang-review.git",
+        )
+        diff_range = f"{BASE_REF}..{HEAD_REF}"
+    else:
+        source, diff_range = worktree, f"{baseline}..{head}"
+    print(f"Review workspace: {worktree}", flush=True)
+    print(f"Source view: {source}", flush=True)
+    return worktree, source, diff_range, state_path.parent
+
+
+def layout(repo, number, worktree, source, diff_range):
+    quote = json.dumps
+    return f'''layout {{
+    pane size=1 borderless=true {{
+        plugin location="zellij:tab-bar"
+    }}
+    pane split_direction="vertical" {{
+        pane name="GitHub review #{number}" command="gh" close_on_exit=true {{
+            cwd {quote(str(worktree))}
+            args "pr-review" "{number}" "--repo" {quote(repo)}
+        }}
+        pane name="Applied source" command="nvim" close_on_exit=true focus=true {{
+            cwd {quote(str(source))}
+            args "-c" {quote(f"DiffviewOpen {diff_range}")}
+        }}
+    }}
+    pane size=1 borderless=true {{
+        plugin location="zellij:status-bar"
+    }}
+}}\n'''
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("number", type=int)
+    parser.add_argument("--repo", default="basetenlabs/baseten")
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Prepare the review without opening its views",
+    )
+    args = parser.parse_args()
+    if args.number <= 0 or not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
+        parser.error("Use a positive PR number and an owner/repo name")
+    work = Path.home() / "work"
+    work.mkdir(exist_ok=True)
+    with (work / ".pr-review.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        worktree, source, diff_range, metadata = prepare(args.repo, args.number, work)
+    view = metadata / "layout.kdl"
+    view.write_text(layout(args.repo, args.number, worktree, source, diff_range))
+    if args.prepare_only:
+        return
+    if os.environ.get("ZELLIJ_SESSION_NAME"):
+        run(
+            "zellij",
+            "action",
+            "new-tab",
+            "--name",
+            f"PR {args.number}",
+            "--layout",
+            view,
+        )
+    else:
+        os.execvp("zellij", ["zellij", "--layout", str(view)])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+        print(f"review-pr: {exc}", file=sys.stderr)
+        if sys.stdin.isatty():
+            input("Press Enter to return to the inbox.")
+        sys.exit(1)

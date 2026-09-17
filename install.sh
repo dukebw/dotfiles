@@ -55,6 +55,9 @@ backup_and_link "$DOTFILES_DIR/git/.gitconfig" "$HOME/.gitconfig"
 mkdir -p "$HOME/.config/zellij"
 backup_and_link "$DOTFILES_DIR/zellij/config.kdl" "$HOME/.config/zellij/config.kdl"
 
+mkdir -p "$HOME/.config/gh-dash"
+backup_and_link "$DOTFILES_DIR/gh-dash/config.yml" "$HOME/.config/gh-dash/config.yml"
+
 mkdir -p "$HOME/.local/bin"
 backup_and_link "$DOTFILES_DIR/bin/r" "$HOME/.local/bin/r"
 backup_and_link "$DOTFILES_DIR/bin/rlog" "$HOME/.local/bin/rlog"
@@ -72,6 +75,7 @@ backup_and_link "$DOTFILES_DIR/bin/opencode-mcp-remote" "$HOME/.local/bin/openco
 backup_and_link "$DOTFILES_DIR/bin/opencode-update" "$HOME/.local/bin/opencode-update"
 backup_and_link "$DOTFILES_DIR/bin/opencode-web-server" "$HOME/.local/bin/opencode-web-server"
 backup_and_link "$DOTFILES_DIR/bin/gh-stack-upstream-sync" "$HOME/.local/bin/gh-stack-upstream-sync"
+backup_and_link "$DOTFILES_DIR/bin/review-pr" "$HOME/.local/bin/review-pr"
 backup_and_link "$DOTFILES_DIR/bin/here-now-publish" "$HOME/.local/bin/here-now-publish"
 backup_and_link "$DOTFILES_DIR/bin/zellij-focus-pane" "$HOME/.local/bin/zellij-focus-pane"
 backup_and_link "$DOTFILES_DIR/bin/claude-code-notify" "$HOME/.local/bin/claude-code-notify"
