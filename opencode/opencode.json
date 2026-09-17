@@ -185,8 +185,8 @@
     "build": {
       "model": "openai/gpt-6-astra#xhigh"
     },
-    "explore": { "model": "baseten/deepseek-ai/DeepSeek-V4.1-Flash#max" },
-    "general": { "model": "baseten/deepseek-ai/DeepSeek-V4.1-Flash#max" }
+    "explore": { "model": "openai/gpt-6-astra#medium" },
+    "general": { "model": "openai/gpt-6-astra#medium" }
   },
   "lsp": {
     "pyright": {
