@@ -13,6 +13,8 @@ readonly log_dir="$HOME/Library/Logs"
 readonly log_file="$log_dir/opencode-update.log"
 readonly service="gui/$UID/ai.opencode.web"
 readonly patch_builder="${0:A:h}/opencode-patch-build"
+readonly recorder_repo="$HOME/work/opencode-request-recorder"
+readonly recorder_failures="$root/recorder-verify-failures"
 
 restart_mode="changed"
 case "${1:-}" in
@@ -29,7 +31,7 @@ esac
   exit 2
 }
 
-mkdir -p "$versions_dir" "$log_dir"
+mkdir -p "$versions_dir" "$log_dir" "$recorder_failures"
 
 log() {
   local line="$(date '+%F %T') $*"
@@ -91,6 +93,29 @@ wait_for_health() {
     sleep 1
   done
   return 1
+}
+
+# A passing request-recorder integration test stamps the runtime version, which
+# is what lets the plugin load on it; an unstamped runtime keeps recording off.
+verify_recorder() {
+  local version="$1" binary="$2"
+  [[ -d "$recorder_repo" ]] || return 0
+  log "Verifying request-recorder against OpenCode $version"
+  if OPENCODE_BIN="$binary" "$npm_bin" --prefix "$recorder_repo" test >>"$log_file" 2>&1; then
+    rm -f "$recorder_failures/$version"
+    log "request-recorder verified OpenCode $version"
+    return 0
+  fi
+  log "request-recorder failed verification against OpenCode $version (details in $log_file)"
+  # Notify once per failing version; the next successful verification clears it.
+  if [[ ! -e "$recorder_failures/$version" ]]; then
+    touch "$recorder_failures/$version"
+    /opt/homebrew/bin/terminal-notifier \
+      -title "OpenCode update" \
+      -message "request-recorder failed verification on $version; recording stays disabled" \
+      >/dev/null 2>&1 || true
+  fi
+  return 0
 }
 
 started_at=$(date +%s)
@@ -177,6 +202,9 @@ fi
 
 changed=false
 version_dir="$versions_dir/$desired_version"
+
+verify_recorder "$desired_version" "$version_dir/bin/opencode2"
+
 if [[ "$current_version" != "$desired_version" ]]; then
   changed=true
   activate "versions/$desired_version"
@@ -204,6 +232,7 @@ if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
     activate "versions/$latest"
     desired_version="$latest"
     version_dir="$official_dir"
+    verify_recorder "$desired_version" "$version_dir/bin/opencode2"
     if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health "$desired_version"; then
       healthy=true
     fi
