@@ -409,3 +409,113 @@ index 2fa486039..89e8b92dd 100644
      tokens: { input: 1, output, reasoning: 0, cache: { read: 0, write: 0 } },
    })
    const messages: SessionMessageInfo[] = [
+diff --git a/packages/core/src/session/runner/to-llm-message.ts b/packages/core/src/session/runner/to-llm-message.ts
+index 313724fa9..d3c4fe038 100644
+--- a/packages/core/src/session/runner/to-llm-message.ts
++++ b/packages/core/src/session/runner/to-llm-message.ts
+@@ -7,8 +7,11 @@ import {
+   type ProviderMetadata,
+ } from "@opencode/ai"
+ import type { Model } from "@opencode/schema/model"
+-import { Option, Schema } from "effect"
++import type { Content } from "@opencode/schema/tool"
++import { Encoding, Option, Result, Schema } from "effect"
++import { isUtf8 } from "node:buffer"
+ import { fileURLToPath } from "url"
++import { Mime } from "../../mime.js"
+ import { SessionMessage } from "../message.js"
+ import { SessionProviderContext } from "../provider-context.js"
+ import type { FileAttachment } from "@opencode/schema/prompt"
+@@ -122,10 +125,22 @@ const toolCall = (tool: SessionMessage.AssistantTool, providerMetadata: Provider
+     providerMetadata,
+   })
+ 
++const toolContent = (part: Content): Content => {
++  if (part.type !== "file" || part.mime !== "application/octet-stream") return part
++  const prefix = "data:application/octet-stream;base64,"
++  if (!part.uri.startsWith(prefix)) return part
++  const decoded = Encoding.decodeBase64(part.uri.slice(prefix.length))
++  if (Result.isFailure(decoded) || !isUtf8(decoded.success) || Mime.detect(decoded.success) !== "text/plain")
++    return part
++  // MCP downloads can label text as binary; normalize on replay so stored results remain usable.
++  const text = Buffer.from(decoded.success).toString("utf8")
++  return { type: "text", text: part.name ? `Attached file: ${part.name}\n\n${text}` : text }
++}
++
+ const toolResult = (tool: SessionMessage.AssistantTool, providerMetadata: ProviderMetadata | undefined) => {
+   if (tool.state.status === "completed") {
+     // TODO: Materialize remote and managed URIs before provider-history lowering.
+-    const content = tool.state.content
++    const content = tool.state.content.map(toolContent)
+     const single = content.length === 1 ? content[0] : undefined
+     return ToolResultPart.make({
+       id: tool.id,
+diff --git a/packages/core/test/session-runner-message.test.ts b/packages/core/test/session-runner-message.test.ts
+index 907bbf978..31c8627ef 100644
+--- a/packages/core/test/session-runner-message.test.ts
++++ b/packages/core/test/session-runner-message.test.ts
+@@ -848,6 +848,64 @@ Recent work
+     ])
+   })
+ 
++  test.each([
++    [
++      "JSONL",
++      "application/octet-stream",
++      Buffer.from('{"message":"hello 🌍"}\n{"ok":true}\n'),
++      '{"message":"hello 🌍"}\n{"ok":true}\n',
++    ],
++    ["empty text", "application/octet-stream", Buffer.alloc(0), ""],
++    ["binary", "application/octet-stream", Buffer.from([0, 1, 2, 255]), undefined],
++    ["invalid UTF-8", "application/octet-stream", Buffer.from([104, 105, 255]), undefined],
++    ["incomplete UTF-8", "application/octet-stream", Buffer.from([104, 105, 195]), undefined],
++    ["PDF", "application/octet-stream", Buffer.from("%PDF-1.7\n"), undefined],
++    ["declared PDF", "application/pdf", Buffer.from("%PDF-1.7\n"), undefined],
++    ["declared image", "image/png", Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), undefined],
++  ] as const)("normalizes stored tool attachments (%s)", (_, mime, bytes, text) => {
++    const file = { type: "file" as const, mime, uri: `data:${mime};base64,${bytes.toString("base64")}` }
++    const content = [{ type: "text" as const, text: "File downloaded" }, file] as const
++    const messages = toLLMMessages(
++      [
++        SessionMessage.Assistant.make({
++          id: id("assistant-tool-attachment"),
++          type: "assistant",
++          agent: build,
++          model,
++          content: [
++            SessionMessage.AssistantTool.make({
++              type: "tool",
++              id: "attachment",
++              name: "execute",
++              state: SessionMessage.ToolStateCompleted.make({
++                status: "completed",
++                input: { code: 'return await tools.slack.slack_read_file({file_id: "sample"})' },
++                content,
++              }),
++              time: { created, completed: created },
++            }),
++          ],
++          time: { created, completed: created },
++        }),
++      ],
++      model,
++    )
++
++    expect(messages[1]?.content).toEqual([
++      {
++        type: "tool-result",
++        id: "attachment",
++        name: "execute",
++        result: {
++          type: "content",
++          value: [content[0], text === undefined ? file : { type: "text", text }],
++        },
++      },
++    ])
++    expect(content[1]).toBe(file)
++    expect(file.mime).toBe(mime)
++  })
++
+   test("restores OpenAI encrypted reasoning metadata", () => {
+     const messages = toLLMMessages(
+       [

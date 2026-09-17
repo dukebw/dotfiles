@@ -151,7 +151,7 @@ def select(release):
         run([bun, "run", "check:generated"], cwd=worktree / "packages/client", env=env)
         for package in ["schema", "core", "client", "tui"]:
             run([bun, "typecheck"], cwd=worktree / "packages" / package, env=env)
-        run([bun, "test", "test/session-runner.test.ts", "test/session-projector.test.ts", "test/session-step.test.ts", "--timeout", "30000", "--only-failures"], cwd=worktree / "packages/core", env=env)
+        run([bun, "test", "test/session-runner.test.ts", "test/session-projector.test.ts", "test/session-step.test.ts", "test/session-runner-message.test.ts", "--timeout", "30000", "--only-failures"], cwd=worktree / "packages/core", env=env)
         run([bun, "test", "test/cli/tui/session-rows.test.ts", "test/app-lifecycle.test.tsx", "--timeout", "30000", "--only-failures"], cwd=worktree / "packages/tui", env=env)
         run([bun, "run", "build", "--single", "--skip-install"], cwd=worktree / "packages/cli", env=env)
         binaries = list((worktree / "packages/cli/dist").glob("cli-*/bin/opencode"))
