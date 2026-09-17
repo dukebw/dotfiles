@@ -1,9 +1,7 @@
 {
   "model": "openai/gpt-6-astra",
   "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    "/Users/brendanduke/work/opencode-request-recorder"
-  ],
+  "plugins": ["/Users/brendanduke/work/opencode-request-recorder"],
   "mcp": {
     "servers": {
       "notion": {
@@ -185,8 +183,8 @@
     "build": {
       "model": "openai/gpt-6-astra#xhigh"
     },
-    "explore": { "model": "openai/gpt-6-astra#medium" },
-    "general": { "model": "openai/gpt-6-astra#medium" }
+    "explore": { "model": "openai/gpt-6-astra#high" },
+    "general": { "model": "openai/gpt-6-astra#high" }
   },
   "lsp": {
     "pyright": {
