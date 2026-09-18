@@ -89,6 +89,15 @@ Requirements: `gh`, the `yukikotani231/gh-pr-review` extension, Python 3.12+,
 Zellij, and Neovim with Diffview. Use `review-pr 28978 --prepare-only` to prepare
 the workspace without opening views.
 
+### Agent review
+
+After `R` creates the worktree, press `A` in gh-dash or run `review-pr 28978 --ai`.
+This opens interactive OpenCode there with your normal settings and the prompt:
+`Review PR basetenlabs/baseten#28978 in this git worktree.`
+
+To return later, run `opencode session list` from the worktree, then open the
+desired session with `opencode ~/work/baseten-pr28978 --session <session-id>`.
+
 ## Remote OpenCode
 
 The remote OpenCode setup uses one native OpenCode 2 background service on

@@ -68,6 +68,20 @@ class ReviewPRTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not created by review-pr"):
             self.prepare_worktree()
 
+    def test_existing_review_reuses_worktree_with_local_edits(self):
+        state_path, state = self.prepare_worktree()
+        (self.worktree / "file").write_text("work in progress\n")
+        self.assertEqual(
+            review.existing_review("basetenlabs/baseten", 1, self.root),
+            (self.worktree, state_path.parent),
+        )
+        self.assertEqual((self.worktree / "file").read_text(), "work in progress\n")
+        self.assertEqual(review.git(self.worktree, "rev-parse", "HEAD"), state["head"])
+        with self.assertRaisesRegex(RuntimeError, "Open this PR with R first"):
+            review.existing_review("basetenlabs/baseten", 2, self.root)
+        with self.assertRaisesRegex(RuntimeError, "belongs to"):
+            review.existing_review("other/baseten", 1, self.root)
+
     def test_prepare_uses_merge_base_and_refreshes_only_review_worktree(self):
         baseline = review.git(self.checkout, "rev-parse", "HEAD")
         (self.checkout / "file").write_text("PR change\n")
@@ -211,6 +225,28 @@ class ReviewPRTests(unittest.TestCase):
         self.assertEqual(
             review.git(source, "show", f"{review.HEAD_REF}:model.py"), "value = 4"
         )
+        (patches / "002_collision.patch").write_text(
+            header + patch.format(before=4, after=5)
+        )
+        conflicting_head = self.commit(self.checkout)
+        with mock.patch.object(
+            review, "cache_pin", side_effect=AssertionError("Unexpected fetch")
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Proposed SGLang patch stack is invalid: Duplicate patch ordering index 002",
+            ):
+                review.prepare_sglang(
+                    self.checkout,
+                    self.worktree,
+                    baseline,
+                    conflicting_head,
+                    state_path,
+                    state,
+                    cache,
+                )
+        self.assertEqual(state["source_revisions"], [baseline, updated_head])
+        self.assertEqual(review.git(source, "status", "--porcelain"), "")
         (source / "model.py").write_text("user edit\n")
         with self.assertRaisesRegex(RuntimeError, "Preserve local changes"):
             review.prepare_sglang(

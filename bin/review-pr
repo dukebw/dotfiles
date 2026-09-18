@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shlex
 import subprocess
 import sys
@@ -197,6 +198,14 @@ def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache)
             scratch = Path(temporary)
             before, old_pin = snapshot(checkout, baseline, scratch / "base")
             after, new_pin = snapshot(checkout, head, scratch / "head")
+            validate_patches = runpy.run_path(str(helper))["patches"]
+            for label, project in (("Baseline", before), ("Proposed", after)):
+                try:
+                    validate_patches(project)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        f"{label} SGLang patch stack is invalid: {exc}"
+                    ) from None
             cache_pin(cache, old_pin)
             cache_pin(cache, new_pin)
             print(f"SGLang source comparison: {old_pin} → {new_pin}", flush=True)
@@ -297,13 +306,37 @@ def prepare(repo, number, work):
     return worktree, source, diff_range, state_path.parent
 
 
-def layout(repo, number, worktree, source, diff_range):
-    quote = json.dumps
-    return f'''layout {{
+def existing_review(repo, number, work):
+    worktree = work / f"{repo.split('/')[1]}-pr{number}"
+    if not worktree.exists():
+        raise RuntimeError(f"Open this PR with R first to create {worktree}")
+    metadata = Path(git(worktree, "rev-parse", "--absolute-git-dir")) / "pr-review"
+    state_path = metadata / "state.json"
+    if not state_path.exists():
+        raise RuntimeError(f"{worktree} was not created by review-pr")
+    state = json.loads(state_path.read_text())
+    if state["repo"] != repo:
+        raise RuntimeError(f"{worktree} belongs to {state['repo']}, not {repo}")
+    return worktree, metadata
+
+
+def review_tab(name, panes):
+    return f"""layout {{
+    tab name={json.dumps(name)} {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
-    pane split_direction="vertical" {{
+    {panes}
+    pane size=1 borderless=true {{
+        plugin location="zellij:status-bar"
+    }}
+    }}
+}}\n"""
+
+
+def layout(repo, number, worktree, source, diff_range):
+    quote = json.dumps
+    panes = f'''pane split_direction="vertical" {{
         pane name="GitHub review #{number}" command="gh" close_on_exit=true {{
             cwd {quote(str(worktree))}
             args "pr-review" "{number}" "--repo" {quote(repo)}
@@ -313,31 +346,51 @@ def layout(repo, number, worktree, source, diff_range):
             args "-c" {quote(f"DiffviewOpen {diff_range}")}
         }}
     }}
-    pane size=1 borderless=true {{
-        plugin location="zellij:status-bar"
-    }}
-}}\n'''
+'''
+    return review_tab(f"PR {number}", panes)
+
+
+def agent_layout(repo, number, worktree):
+    prompt = f"Review PR {repo}#{number} in this git worktree."
+    pane = f"""pane name="OpenCode review" command="opencode" close_on_exit=true {{
+        cwd {json.dumps(str(worktree))}
+        args {json.dumps(str(worktree))} "--prompt" {json.dumps(prompt)}
+    }}"""
+    return review_tab(f"AI review {number}", pane)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("number", type=int)
     parser.add_argument("--repo", default="basetenlabs/baseten")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--prepare-only",
         action="store_true",
         help="Prepare the review without opening its views",
+    )
+    mode.add_argument(
+        "--ai",
+        action="store_true",
+        help="Open interactive OpenCode in the worktree already created by R",
     )
     args = parser.parse_args()
     if args.number <= 0 or not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         parser.error("Use a positive PR number and an owner/repo name")
     work = Path.home() / "work"
-    work.mkdir(exist_ok=True)
-    with (work / ".pr-review.lock").open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        worktree, source, diff_range, metadata = prepare(args.repo, args.number, work)
-    view = metadata / "layout.kdl"
-    view.write_text(layout(args.repo, args.number, worktree, source, diff_range))
+    if args.ai:
+        worktree, metadata = existing_review(args.repo, args.number, work)
+        view = metadata / "agent.kdl"
+        view.write_text(agent_layout(args.repo, args.number, worktree))
+    else:
+        work.mkdir(exist_ok=True)
+        with (work / ".pr-review.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            worktree, source, diff_range, metadata = prepare(
+                args.repo, args.number, work
+            )
+        view = metadata / "layout.kdl"
+        view.write_text(layout(args.repo, args.number, worktree, source, diff_range))
     if args.prepare_only:
         return
     if os.environ.get("ZELLIJ_SESSION_NAME"):
@@ -345,8 +398,6 @@ def main():
             "zellij",
             "action",
             "new-tab",
-            "--name",
-            f"PR {args.number}",
             "--layout",
             view,
         )
