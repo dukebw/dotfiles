@@ -82,8 +82,9 @@ overwritten. Preparation state and the Zellij layout live in the worktree's Git
 metadata directory.
 
 For these PRs, an **Applied SGLang source** pane sits collapsed in the same stack
-as **Full PR diff**. Use `Alt-j` / `Alt-k` to switch between them. The applied view
-compares the reconstructed source trees, including upstream changes when the
+as **Full PR diff**. Use `Alt-j` / `Alt-k` to switch between them, then press Enter
+to launch the applied view at its expanded size. The applied view compares the
+reconstructed source trees, including upstream changes when the
 source pin changes. GitHub comments attach to the original PR paths, including
 the patch files. In `gh pr-review`, `S` opens review submission, `Tab` switches
 between review type and body, and `Ctrl-S` submits.

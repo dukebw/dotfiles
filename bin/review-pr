@@ -344,7 +344,7 @@ def layout(repo, number, worktree, source, diff_range):
     if source != worktree:
         diffs = f"""pane stacked=true {{
             {diffs}
-            pane name="Applied SGLang source" command="nvim" close_on_exit=true {{
+            pane name="Applied SGLang source" command="nvim" close_on_exit=true start_suspended=true {{
                 cwd {quote(str(source))}
                 args "-c" {quote(f"DiffviewOpen {BASE_REF}..{HEAD_REF}")}
             }}

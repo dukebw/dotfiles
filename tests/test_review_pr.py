@@ -180,6 +180,7 @@ class ReviewPRTests(unittest.TestCase):
         self.assertIn(f"DiffviewOpen {diff_range}", full)
         applied = re.search(r'pane name="Applied SGLang source"[^}]+}', layout).group()
         self.assertNotIn("focus=true", applied)
+        self.assertIn("start_suspended=true", applied)
         self.assertIn(f'cwd "{source}"', applied)
         self.assertIn(f"DiffviewOpen {review.BASE_REF}..{review.HEAD_REF}", applied)
 
