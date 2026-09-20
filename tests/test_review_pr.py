@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 import json
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import unittest
@@ -114,6 +115,12 @@ class ReviewPRTests(unittest.TestCase):
             self.assertEqual(
                 review.git(worktree, "diff", "--name-only", diff_range), "file"
             )
+            layout = review.layout(
+                "basetenlabs/baseten", 1, worktree, source, diff_range
+            )
+            self.assertIn('pane name="Full PR diff"', layout)
+            self.assertNotIn("stacked=true", layout)
+            self.assertNotIn("Applied SGLang source", layout)
             review.git(self.checkout, "checkout", "--detach", head)
             (self.checkout / "file").write_text("updated PR\n")
             pr["headRefOid"] = self.commit(self.checkout)
@@ -124,6 +131,57 @@ class ReviewPRTests(unittest.TestCase):
             review.prepare("basetenlabs/baseten", 1, self.root)
             self.assertEqual((worktree / "file").read_text(), "updated PR\n")
             self.assertEqual(review.git(self.checkout, "rev-parse", "HEAD"), base_tip)
+
+    def test_mixed_pr_defaults_to_full_diff_with_applied_source_companion(self):
+        baseline = review.git(self.checkout, "rev-parse", "HEAD")
+        dockerfile = review.PROJECT / "docker/gpu.sglang.Dockerfile"
+        patchfile = review.STACK_PATHS[0] / "001_fixture.patch"
+        (self.checkout / patchfile).parent.mkdir(parents=True)
+        (self.checkout / patchfile).write_text("fixture patch\n")
+        (self.checkout / dockerfile).write_text(
+            "RUN pip install flashinfer-python==0.6.18\n"
+        )
+        head = self.commit(self.checkout)
+        review.git(self.checkout, "update-ref", "refs/pull/1/head", head)
+        source = self.worktree / review.PROJECT / "sglang"
+        execute = review.run
+
+        def local_github(*args, **kwargs):
+            if args[:3] == ("gh", "pr", "view"):
+                return json.dumps({"headRefOid": head, "baseRefOid": baseline})
+            args = tuple(
+                str(self.checkout)
+                if arg == "https://github.com/basetenlabs/baseten.git"
+                else arg
+                for arg in args
+            )
+            return execute(*args, **kwargs)
+
+        with (
+            mock.patch.object(review, "run", side_effect=local_github),
+            mock.patch.object(review, "prepare_sglang", return_value=source),
+        ):
+            worktree, applied_source, diff_range, _ = review.prepare(
+                "basetenlabs/baseten", 1, self.root
+            )
+        self.assertEqual(applied_source, source)
+        self.assertEqual(diff_range, f"{baseline}..{head}")
+        self.assertEqual(
+            review.git(worktree, "diff", "--name-only", diff_range).splitlines(),
+            [str(dockerfile), str(patchfile)],
+        )
+        layout = review.layout(
+            "basetenlabs/baseten", 1, worktree, applied_source, diff_range
+        )
+        self.assertIn("pane stacked=true", layout)
+        full = re.search(r'pane name="Full PR diff"[^}]+}', layout).group()
+        self.assertIn("focus=true expanded=true", full)
+        self.assertIn(f'cwd "{worktree}"', full)
+        self.assertIn(f"DiffviewOpen {diff_range}", full)
+        applied = re.search(r'pane name="Applied SGLang source"[^}]+}', layout).group()
+        self.assertNotIn("focus=true", applied)
+        self.assertIn(f'cwd "{source}"', applied)
+        self.assertIn(f"DiffviewOpen {review.BASE_REF}..{review.HEAD_REF}", applied)
 
     @unittest.skipUnless(
         HELPER.exists(), "Requires the Baseten SGLang development helper"

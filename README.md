@@ -61,15 +61,16 @@ cd ~/dotfiles && ./install.sh
 - `bin/opencode-patch-build` - resolve release sources, test/build the saved patch, and cache native artifacts
 - `bin/opencode-web-server` - keep the native OpenCode 2 service available for Tailscale Serve
 - `bin/gh-stack-upstream-sync` - validate and synchronize `github/gh-stack` into the fork
-- `bin/review-pr` - prepare a PR worktree and open GitHub review plus applied-source Diffview in Zellij
+- `bin/review-pr` - prepare a PR worktree and open GitHub review plus full-PR Diffview in Zellij
 - `bin/here-now-publish` - publish and version internal artifacts through here-now
 
 ## PR review
 
 Run `gh dash` and press `R` on a PR, or run `review-pr 28978` directly.
 The launcher uses `~/work/baseten-pr28978/` for the Baseten worktree and opens a
-Zellij tab with `gh pr-review` and Neovim Diffview. Other repositories use
-`~/work/<repo>-pr<number>/` and their ordinary source diff.
+Zellij tab with `gh pr-review` and Neovim Diffview focused on the full PR diff,
+including patch files, Dockerfiles, tests, and deployment configuration. Other
+repositories use `~/work/<repo>-pr<number>/`.
 
 For SGLang patch or source-pin changes, the launcher reconstructs both the PR's
 merge-base stack and proposed stack using `bin/sglang_dev.py` from the main
@@ -80,7 +81,9 @@ applied trees. Local edits or unexpected commits stop refresh rather than being
 overwritten. Preparation state and the Zellij layout live in the worktree's Git
 metadata directory.
 
-Diffview compares the applied source trees, including upstream changes when the
+For these PRs, an **Applied SGLang source** pane sits collapsed in the same stack
+as **Full PR diff**. Use `Alt-j` / `Alt-k` to switch between them. The applied view
+compares the reconstructed source trees, including upstream changes when the
 source pin changes. GitHub comments attach to the original PR paths, including
 the patch files. In `gh pr-review`, `S` opens review submission, `Tab` switches
 between review type and body, and `Ctrl-S` submits.

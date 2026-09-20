@@ -298,9 +298,9 @@ def prepare(repo, number, work):
             state,
             work / "sglang-review.git",
         )
-        diff_range = f"{BASE_REF}..{HEAD_REF}"
     else:
-        source, diff_range = worktree, f"{baseline}..{head}"
+        source = worktree
+    diff_range = f"{baseline}..{head}"
     print(f"Review workspace: {worktree}", flush=True)
     print(f"Source view: {source}", flush=True)
     return worktree, source, diff_range, state_path.parent
@@ -336,15 +336,25 @@ def review_tab(name, panes):
 
 def layout(repo, number, worktree, source, diff_range):
     quote = json.dumps
+    expanded = " expanded=true" if source != worktree else ""
+    diffs = f"""pane name="Full PR diff" command="nvim" close_on_exit=true focus=true{expanded} {{
+        cwd {quote(str(worktree))}
+        args "-c" {quote(f"DiffviewOpen {diff_range}")}
+    }}"""
+    if source != worktree:
+        diffs = f"""pane stacked=true {{
+            {diffs}
+            pane name="Applied SGLang source" command="nvim" close_on_exit=true {{
+                cwd {quote(str(source))}
+                args "-c" {quote(f"DiffviewOpen {BASE_REF}..{HEAD_REF}")}
+            }}
+        }}"""
     panes = f'''pane split_direction="vertical" {{
         pane name="GitHub review #{number}" command="gh" close_on_exit=true {{
             cwd {quote(str(worktree))}
             args "pr-review" "{number}" "--repo" {quote(repo)}
         }}
-        pane name="Applied source" command="nvim" close_on_exit=true focus=true {{
-            cwd {quote(str(source))}
-            args "-c" {quote(f"DiffviewOpen {diff_range}")}
-        }}
+        {diffs}
     }}
 '''
     return review_tab(f"PR {number}", panes)
