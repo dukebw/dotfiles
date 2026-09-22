@@ -209,7 +209,7 @@ Verify the discovered service address and PID:
 
 ```zsh
 opencode service status
-opencode api get /api/status
+opencode api get /api/info
 ```
 
 ## OpenCode 2 service model
@@ -273,17 +273,12 @@ tail -f "$HOME/Library/Logs/opencode-update.log"
 
 The availability monitor uses `KeepAlive` and `caffeinate -i`. It restarts
 the native service after failure and prevents idle system sleep even on battery.
-The update LaunchAgent checks `@opencode/cli@latest` daily at 04:00. Its
-`opencode-patch-build` helper tries the saved `opencode/patches/request-throughput.patch`
-against that release's exact source commit from the official update service in a disposable worktree under `~/work/`.
-Clean patches must pass generated-client checks, typechecks, tests, a native build,
-and an isolated private-server health check. Release/patch metadata caches successful
-builds and keeps the current patched installation when no new release or patch exists.
-Conflicts and build failures select the official release; patches already included
-upstream also select the official release. The updater atomically activates the selected
-build and restarts the server. If a patched server fails health checks, it tries the
-official release before rolling back to the previous installation. Automatic updates
-remain enabled; removing the saved patch file restores official-only updates.
+The update LaunchAgent checks `@opencode/cli@latest` daily at 04:00. The updater
+installs the official release, atomically activates it, and restarts the server.
+It verifies the authenticated `/api/info` response and rolls back to the previous
+installation if health checks fail. The current and previous installations are
+retained; older versions are removed. Reopen terminal clients after an update:
+old clients can replace the shared service with their own version on reconnect.
 Closing a MacBook lid still normally sleeps the
 machine. After a reboot, the user must log in before these user LaunchAgents
 can operate normally; unlocking Keychain is no longer required for the server.
@@ -296,9 +291,9 @@ Check in this order:
 launchctl print gui/$UID/ai.opencode.web
 launchctl print gui/$UID/ai.opencode.update
 opencode service status
-opencode api get /api/status
+opencode api get /api/info
 lsof -nP -iTCP:4096 -sTCP:LISTEN
-curl -o /dev/null -sS -w '%{http_code}\n' http://127.0.0.1:4096/api/status
+curl -o /dev/null -sS -w '%{http_code}\n' http://127.0.0.1:4096/api/info
 curl -fsSL http://go/here-now-llm
 tailscale serve status
 tailscale status

@@ -20,7 +20,7 @@
       "baseten": {
         "type": "remote",
         "url": "http://127.0.0.1:4202/mcp",
-        "disabled": false,
+        "disabled": true,
         "timeout": {
           "catalog": 30000,
           "execution": 30000

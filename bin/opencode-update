@@ -12,9 +12,6 @@ readonly lock_dir="$root/update.lock"
 readonly log_dir="$HOME/Library/Logs"
 readonly log_file="$log_dir/opencode-update.log"
 readonly service="gui/$UID/ai.opencode.web"
-readonly patch_builder="${0:A:h}/opencode-patch-build"
-readonly recorder_repo="$HOME/work/opencode-request-recorder"
-readonly recorder_failures="$root/recorder-verify-failures"
 
 restart_mode="changed"
 case "${1:-}" in
@@ -31,7 +28,7 @@ esac
   exit 2
 }
 
-mkdir -p "$versions_dir" "$log_dir" "$recorder_failures"
+mkdir -p "$versions_dir" "$log_dir"
 
 log() {
   local line="$(date '+%F %T') $*"
@@ -80,10 +77,11 @@ wait_for_health() {
         --silent \
         --output /dev/null \
         --write-out '%{http_code}' \
-        http://127.0.0.1:4096/api/status || true
+        http://127.0.0.1:4096/api/info || true
     )
     if [[ "$code" == "401" ]]; then
-      response="$("$HOME/.local/bin/opencode" api get /api/status 2>>"$log_file" ||
+      response="$("$HOME/.local/bin/opencode" api get /api/info 2>>"$log_file" ||
+        "$HOME/.local/bin/opencode" api get /api/status 2>>"$log_file" ||
         "$HOME/.local/bin/opencode" api get /api/health 2>>"$log_file")" &&
         "$node_bin" -e '
           const status = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
@@ -93,29 +91,6 @@ wait_for_health() {
     sleep 1
   done
   return 1
-}
-
-# A passing request-recorder integration test stamps the runtime version, which
-# is what lets the plugin load on it; an unstamped runtime keeps recording off.
-verify_recorder() {
-  local version="$1" binary="$2"
-  [[ -d "$recorder_repo" ]] || return 0
-  log "Verifying request-recorder against OpenCode $version"
-  if OPENCODE_BIN="$binary" "$npm_bin" --prefix "$recorder_repo" test >>"$log_file" 2>&1; then
-    rm -f "$recorder_failures/$version"
-    log "request-recorder verified OpenCode $version"
-    return 0
-  fi
-  log "request-recorder failed verification against OpenCode $version (details in $log_file)"
-  # Notify once per failing version; the next successful verification clears it.
-  if [[ ! -e "$recorder_failures/$version" ]]; then
-    touch "$recorder_failures/$version"
-    /opt/homebrew/bin/terminal-notifier \
-      -title "OpenCode update" \
-      -message "request-recorder failed verification on $version; recording stays disabled" \
-      >/dev/null 2>&1 || true
-  fi
-  return 0
 }
 
 started_at=$(date +%s)
@@ -152,8 +127,8 @@ if [[ -x "$current_link/bin/opencode2" ]]; then
 fi
 log "Resolved $package@$release_selector to $latest"
 
-official_dir="$versions_dir/$latest"
-if [[ ! -x "$official_dir/bin/opencode2" ]]; then
+version_dir="$versions_dir/$latest"
+if [[ ! -x "$version_dir/bin/opencode2" ]]; then
   install_dir="$versions_dir/.install-$latest-$$"
   log "Installing OpenCode $latest"
   if ! "$npm_bin" install \
@@ -180,37 +155,19 @@ if [[ ! -x "$official_dir/bin/opencode2" ]]; then
     exit 1
   }
 
-  rm -rf "$official_dir"
-  /bin/mv "$install_dir" "$official_dir"
+  rm -rf "$version_dir"
+  /bin/mv "$install_dir" "$version_dir"
   install_dir=""
 fi
 
-desired_version="$latest"
-if [[ -x "$patch_builder" ]]; then
-  if patched_version="$("$patch_builder" "$latest" 2>>"$log_file")"; then
-    if [[ "$patched_version" =~ '^[0-9A-Za-z][0-9A-Za-z._-]*$' ]] && \
-      [[ -x "$versions_dir/$patched_version/bin/opencode2" ]] && \
-      [[ "$(binary_version "$versions_dir/$patched_version/bin/opencode2")" == "$patched_version" ]]; then
-      desired_version="$patched_version"
-    else
-      log "Patch builder returned an invalid artifact; using official OpenCode $latest"
-    fi
-  else
-    log "Throughput patch build failed; using official OpenCode $latest (details in $log_file)"
-  fi
-fi
-
 changed=false
-version_dir="$versions_dir/$desired_version"
 
-verify_recorder "$desired_version" "$version_dir/bin/opencode2"
-
-if [[ "$current_version" != "$desired_version" ]]; then
+if [[ "$current_version" != "$latest" ]]; then
   changed=true
-  activate "versions/$desired_version"
-  log "Activated OpenCode $desired_version"
+  activate "versions/$latest"
+  log "Activated OpenCode $latest"
 else
-  log "OpenCode $desired_version is already current"
+  log "OpenCode $latest is already current"
 fi
 
 restart=false
@@ -222,22 +179,7 @@ fi
 
 if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
   log "Restarting the OpenCode server"
-  healthy=false
-  if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health "$desired_version"; then
-    healthy=true
-  elif [[ "$desired_version" != "$latest" ]]; then
-    log "Patched OpenCode failed health checks; trying official OpenCode $latest"
-    mkdir -p "$root/patch-failures"
-    touch "$root/patch-failures/$desired_version"
-    activate "versions/$latest"
-    desired_version="$latest"
-    version_dir="$official_dir"
-    verify_recorder "$desired_version" "$version_dir/bin/opencode2"
-    if "$HOME/.local/bin/opencode" service restart >/dev/null && wait_for_health "$desired_version"; then
-      healthy=true
-    fi
-  fi
-  if [[ "$healthy" != true ]]; then
+  if ! "$HOME/.local/bin/opencode" service restart >/dev/null || ! wait_for_health "$latest"; then
     if [[ -n "$previous_target" && -x "$root/$previous_target/bin/opencode2" ]]; then
       log "OpenCode $latest failed health checks; rolling back"
       activate "$previous_target"
@@ -251,7 +193,7 @@ if [[ "$restart" == true ]] && launchctl print "$service" >/dev/null 2>&1; then
   fi
   log "OpenCode server is healthy"
 elif [[ "$changed" == true ]]; then
-  log "OpenCode $desired_version is staged for the next server start"
+  log "OpenCode $latest is staged for the next server start"
 fi
 
 previous_dir=""
@@ -259,7 +201,7 @@ if [[ -n "$previous_target" ]]; then
   previous_dir="$root/$previous_target"
 fi
 for directory in "$versions_dir"/*(N/); do
-  [[ "$directory" == "$version_dir" || "$directory" == "$previous_dir" || "$directory" == "$official_dir" ]] && continue
+  [[ "$directory" == "$version_dir" || "$directory" == "$previous_dir" ]] && continue
   rm -rf "$directory"
 done
 

@@ -1,7 +1,6 @@
 {
   "model": "openai/gpt-6-astra",
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["/Users/brendanduke/work/opencode-request-recorder"],
   "mcp": {
     "servers": {
       "notion": {
