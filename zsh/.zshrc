@@ -112,7 +112,8 @@ klf() {
 }
 alias gc!='git -c core.commentChar=";" commit --verbose --amend'
 claude-remote() {
-  caffeinate -i /Users/brendanduke/.local/bin/claude "$@" --remote-control "Baseten Remote"
+  # --remote-control takes an optional name, so it must not sit directly before a positional prompt.
+  caffeinate -i "$commands[claude]" --remote-control --remote-control-session-name-prefix Baseten "$@"
 }
 
 lidawake() {
