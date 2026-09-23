@@ -22,6 +22,10 @@ q       quit one nvitop (its pane closes)
    containers with a positive `nvidia.com/gpu` request are included, so managed
    frontends and routers are excluded. Local `.rexec*.yaml` files play no part:
    they are sync plumbing, not an authority (ADR 0001).
+   When a context exists under multiple rcli providers, `b10-gpu` uses
+   `default_provider` from `~/.rcli/config.yaml` to choose its kubeconfig.
+   Namespaces are queried concurrently with a server-side Running filter,
+   avoiding a download of unrelated namespaces and completed pod history.
 2. Each pane runs `kubectl exec -it <pod> -c <gpu-container>`. It uses an
    installed `nvitop`, otherwise `uvx --from nvitop nvitop`, and finally
    `nvidia-smi -l 1`. No ssh shim or port-forward is involved, so a newly

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -85,7 +86,81 @@ def node(name: str, gpus: int = 0) -> dict:
     return {"metadata": {"name": name}, "status": {"allocatable": allocatable}}
 
 
+class KubeconfigResolutionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.root = Path(directory) / "kubeconfig"
+        self.root.mkdir()
+        self.enterContext(
+            mock.patch.object(B10_GPU, "DEFAULT_RCLI_KUBECONFIG_DIR", self.root)
+        )
+
+    def kubeconfig(self, provider: str = "") -> Path:
+        path = self.root / provider / "gcp-ue4-prod-2.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        return path
+
+    def test_default_provider_resolves_duplicate_cluster_files(self) -> None:
+        paths = {provider: self.kubeconfig(provider) for provider in ("rancher", "tailscale")}
+        self.kubeconfig()
+        for provider, expected in paths.items():
+            with self.subTest(provider=provider):
+                (self.root.parent / "config.yaml").write_text(
+                    f"default_provider: {provider}\nselect_mode: kubectl\n"
+                )
+                self.assertEqual(
+                    B10_GPU.rcli_kubeconfig_for_context("gcp-ue4-prod-2"),
+                    str(expected),
+                )
+
+    def test_single_legacy_or_provider_file_needs_no_default(self) -> None:
+        for provider in ("", "rancher", "tailscale"):
+            with self.subTest(provider=provider):
+                path = self.kubeconfig(provider)
+                self.assertEqual(
+                    B10_GPU.rcli_kubeconfig_for_context("gcp-ue4-prod-2"), str(path)
+                )
+                path.unlink()
+
+    def test_ambiguous_files_without_matching_default_fail(self) -> None:
+        self.kubeconfig("rancher")
+        self.kubeconfig("tailscale")
+        for config in ("", "default_provider: gcp\n"):
+            with self.subTest(config=config):
+                (self.root.parent / "config.yaml").write_text(config)
+                with self.assertRaisesRegex(B10_GPU.CommandError, "default_provider"):
+                    B10_GPU.rcli_kubeconfig_for_context("gcp-ue4-prod-2")
+
+    def test_invalid_provider_config_reports_an_error(self) -> None:
+        self.kubeconfig("rancher")
+        self.kubeconfig("tailscale")
+        for config in ("[", "- tailscale\n", "default_provider: [tailscale]\n"):
+            with self.subTest(config=config):
+                (self.root.parent / "config.yaml").write_text(config)
+                with self.assertRaises(B10_GPU.CommandError):
+                    B10_GPU.rcli_kubeconfig_for_context("gcp-ue4-prod-2")
+
+
 class B10GPUFleetTests(unittest.TestCase):
+    def mock_kubernetes(self, pods: list[dict], nodes: list[dict] | None = None):
+        def query(ctx, args):
+            if args == ["get", "nodes"]:
+                return {"items": nodes or []}
+            self.assertEqual(args[:2], ["get", "pods"])
+            namespace = args[args.index("--namespace") + 1]
+            running_only = "status.phase=Running" in args
+            return {
+                "items": [
+                    pod
+                    for pod in pods
+                    if pod["metadata"]["namespace"] == namespace
+                    and (not running_only or pod["status"]["phase"] == "Running")
+                ]
+            }
+
+        return mock.patch.object(B10_GPU, "kubectl_json", side_effect=query)
+
     def test_owned_pods_cover_dev_dynamo_and_sglang_shapes(self) -> None:
         fixtures = [
             pod("baseten", "brendanduke-dev-pod-b200-0", [("dev", 1)]),
@@ -117,13 +192,25 @@ class B10GPUFleetTests(unittest.TestCase):
             pod("dynamo", "brendanduke-finished", [("main", 4)], phase="Succeeded"),
             pod("other", "brendanduke-other-namespace", [("main", 4)]),
         ]
-        with mock.patch.object(
-            B10_GPU, "kubectl_json", return_value={"items": fixtures}
-        ):
+        with self.mock_kubernetes(fixtures) as query:
             result = B10_GPU.owned_pods(
                 {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
             )
 
+        query.assert_has_calls(
+            [
+                mock.call(
+                    {},
+                    [
+                        "get", "pods", "--namespace", namespace,
+                        "--field-selector", "status.phase=Running",
+                    ],
+                )
+                for namespace in B10_GPU.DEFAULT_FLEET_NAMESPACES
+            ],
+            any_order=True,
+        )
+        self.assertEqual(query.call_count, len(B10_GPU.DEFAULT_FLEET_NAMESPACES))
         self.assertEqual(len(result), 4)
         self.assertEqual(
             {
@@ -148,14 +235,37 @@ class B10GPUFleetTests(unittest.TestCase):
         fixture = pod(
             "dynamo", "brendanduke-finished", [("main", 4)], phase="Succeeded"
         )
-        with mock.patch.object(
-            B10_GPU, "kubectl_json", return_value={"items": [fixture]}
-        ):
+        with self.mock_kubernetes([fixture]) as query:
             result = B10_GPU.owned_pods(
                 {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", True
             )
 
         self.assertEqual(result[0]["phase"], "Succeeded")
+        query.assert_has_calls(
+            [
+                mock.call({}, ["get", "pods", "--namespace", namespace])
+                for namespace in B10_GPU.DEFAULT_FLEET_NAMESPACES
+            ],
+            any_order=True,
+        )
+        self.assertEqual(query.call_count, len(B10_GPU.DEFAULT_FLEET_NAMESPACES))
+
+    def test_explicit_namespace_queries_only_that_namespace(self) -> None:
+        fixtures = [
+            pod("custom-dev", "brendanduke-worker", [("main", 4)]),
+            pod("dynamo", "brendanduke-other-worker", [("main", 4)]),
+        ]
+        with self.mock_kubernetes(fixtures) as query:
+            result = B10_GPU.owned_pods({}, ["custom-dev"], "brendanduke", False)
+
+        self.assertEqual([row["namespace"] for row in result], ["custom-dev"])
+        query.assert_called_once_with(
+            {},
+            [
+                "get", "pods", "--namespace", "custom-dev",
+                "--field-selector", "status.phase=Running",
+            ],
+        )
 
     def test_one_row_per_gpu_container(self) -> None:
         fixture = pod(
@@ -163,9 +273,7 @@ class B10GPUFleetTests(unittest.TestCase):
             "brendanduke-multi-container",
             [("worker-a", 2), ("sidecar", 0), ("worker-b", 2)],
         )
-        with mock.patch.object(
-            B10_GPU, "kubectl_json", return_value={"items": [fixture]}
-        ):
+        with self.mock_kubernetes([fixture]):
             result = B10_GPU.owned_pods(
                 {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
             )
@@ -190,9 +298,7 @@ class B10GPUFleetTests(unittest.TestCase):
                 container_readiness={"main": False},
             ),
         ]
-        with mock.patch.object(
-            B10_GPU, "kubectl_json", return_value={"items": fixtures}
-        ):
+        with self.mock_kubernetes(fixtures):
             result = B10_GPU.owned_pods(
                 {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
             )
@@ -208,10 +314,8 @@ class B10GPUFleetTests(unittest.TestCase):
             [("dev", 0)],
             privileged=("dev",),
         )
-        nodes = {"items": [node("node-b200-debugging-brendanduke-dev-0", gpus=8)]}
-        with mock.patch.object(
-            B10_GPU, "kubectl_json", side_effect=[{"items": [dev]}, nodes]
-        ):
+        nodes = [node("node-b200-debugging-brendanduke-dev-0", gpus=8)]
+        with self.mock_kubernetes([dev], nodes):
             result = B10_GPU.owned_pods(
                 {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
             )
@@ -228,10 +332,8 @@ class B10GPUFleetTests(unittest.TestCase):
             [("dev", 0)],
             privileged=("dev",),
         )
-        nodes = {"items": [node("node-remote-clangd-debugging-brendanduke-0")]}
-        with mock.patch.object(
-            B10_GPU, "kubectl_json", side_effect=[{"items": [clangd]}, nodes]
-        ):
+        nodes = [node("node-remote-clangd-debugging-brendanduke-0")]
+        with self.mock_kubernetes([clangd], nodes):
             result = B10_GPU.owned_pods(
                 {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
             )
@@ -240,15 +342,13 @@ class B10GPUFleetTests(unittest.TestCase):
 
     def test_unprivileged_zero_request_pod_needs_no_node_query(self) -> None:
         plain = pod("baseten", "brendanduke-cpu-only", [("dev", 0)])
-        with mock.patch.object(
-            B10_GPU, "kubectl_json", return_value={"items": [plain]}
-        ) as kubectl_json_mock:
+        with self.mock_kubernetes([plain]) as kubectl_json_mock:
             result = B10_GPU.owned_pods(
                 {}, list(B10_GPU.DEFAULT_FLEET_NAMESPACES), "brendanduke", False
             )
 
         self.assertEqual(result, [])
-        self.assertEqual(kubectl_json_mock.call_count, 1)
+        self.assertEqual(kubectl_json_mock.call_count, len(B10_GPU.DEFAULT_FLEET_NAMESPACES))
 
 
 class GPUFleetLauncherTests(unittest.TestCase):

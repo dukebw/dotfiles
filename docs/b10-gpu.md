@@ -5,8 +5,11 @@ manual Kubernetes/DCGM operations repeatable without hiding the underlying
 objects: nodes, pods, StatefulSets, DCGM exporters, and node-debugger pods.
 
 The tool uses the current `kubectl` context selected by `rcli select`, then runs
-Kubernetes commands against the matching rcli-generated kubeconfig at
-`~/.rcli/kubeconfig/<context>.yaml`. Run this first:
+Kubernetes commands against the matching rcli-generated kubeconfig under
+`~/.rcli/kubeconfig/`. If several providers contain the same context, it uses
+`default_provider` from `~/.rcli/config.yaml`, such as
+`~/.rcli/kubeconfig/tailscale/<context>.yaml`. A single matching provider or
+legacy `~/.rcli/kubeconfig/<context>.yaml` file also works. Run this first:
 
 ```bash
 rcli select
@@ -54,7 +57,9 @@ b10-gpu --namespace dynamo fleet
 ```
 
 By default, fleet discovery queries `baseten`, `baseten-devenv`, `dynamo`, and
-`mp-devenv`. It selects Running pods whose name, `baseten.co/model`, or Helm
+`mp-devenv` concurrently, with `status.phase=Running` filtered by the API server.
+`--all-phases` includes terminal and pending pods in those same namespaces.
+It selects pods whose name, `baseten.co/model`, or Helm
 instance label contains the owner token, then returns one row per container
 with a positive `nvidia.com/gpu` request. This includes owned managed serving
 workers while excluding their CPU frontends and routers. Results include the

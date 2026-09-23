@@ -16,8 +16,11 @@ import shlex
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 DEFAULT_RCLI_KUBECONFIG_DIR = Path.home() / ".rcli" / "kubeconfig"
 DEFAULT_GPU_PRODUCT = "NVIDIA-B200"
@@ -79,8 +82,26 @@ def rcli_kubeconfig_for_context(context: str) -> str:
             "Run `rcli sync`, then `rcli select`."
         )
     if len(candidates) > 1:
+        config_path = root.parent / "config.yaml"
+        if config_path.exists():
+            try:
+                config = yaml.safe_load(config_path.read_text()) or {}
+            except yaml.YAMLError as exc:
+                raise CommandError(f"Invalid YAML in rcli config {config_path}") from exc
+            if not isinstance(config, dict):
+                raise CommandError(f"Expected a mapping in rcli config {config_path}")
+            provider = config.get("default_provider")
+            if provider is not None and not isinstance(provider, str):
+                raise CommandError(f"Expected default_provider to be a string in {config_path}")
+            if provider:
+                preferred = root / provider / f"{context}.yaml"
+                if preferred in candidates:
+                    return str(preferred)
         joined = ", ".join(str(path) for path in candidates)
-        raise CommandError(f"Multiple rcli kubeconfigs found for current context {context!r}: {joined}")
+        raise CommandError(
+            f"Multiple rcli kubeconfigs found for current context {context!r}: {joined}. "
+            f"Select a matching default_provider in {config_path}."
+        )
     return str(candidates[0])
 
 
@@ -652,11 +673,23 @@ def owned_pods(
     owner: str,
     all_phases: bool,
 ) -> list[dict[str, Any]]:
-    data = kubectl_json(ctx, ["get", "pods", "--all-namespaces", "-o", "json"])
+    phase_filter = [] if all_phases else ["--field-selector", "status.phase=Running"]
+
+    def namespace_pods(namespace: str) -> list[dict[str, Any]]:
+        return kubectl_json(
+            ctx, ["get", "pods", "--namespace", namespace, *phase_filter]
+        ).get("items", [])
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        pods = [
+            pod
+            for items in pool.map(namespace_pods, dict.fromkeys(namespaces))
+            for pod in items
+        ]
     namespace_set = set(namespaces)
     rows = []
     observers: list[tuple[dict[str, Any], str]] = []
-    for pod in data.get("items", []):
+    for pod in pods:
         metadata = pod.get("metadata", {})
         if metadata.get("namespace", "") not in namespace_set or not pod_matches_owner(
             pod, owner
