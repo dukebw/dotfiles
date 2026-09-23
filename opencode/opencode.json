@@ -182,8 +182,8 @@
     "build": {
       "model": "openai/gpt-6-astra#xhigh"
     },
-    "explore": { "model": "openai/gpt-6-astra#high" },
-    "general": { "model": "openai/gpt-6-astra#high" }
+    "explore": { "model": "openai/gpt-6-sol-fast#high" },
+    "general": { "model": "openai/gpt-6-sol-fast#high" }
   },
   "lsp": {
     "pyright": {
