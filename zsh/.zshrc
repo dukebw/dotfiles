@@ -102,6 +102,9 @@ source $ZSH/oh-my-zsh.sh
 # Example aliases
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
+if command -v brew >/dev/null 2>&1; then
+  alias assume="source $(brew --prefix)/bin/assume"
+fi
 alias k=kubectl
 alias klf-raw='kubectl logs --follow --all-pods=true --all-containers=true --prefix'
 # Stern owns pod discovery and resilient streams; klf-pretty owns rendering.
