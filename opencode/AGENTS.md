@@ -55,6 +55,9 @@ token, rename and recreate the deployment before proceeding.
 
 Create repository clones and Git worktrees under `~/work/`, not temporary directories.
 
+Keep inference-engine and runtime forks (SGLang, vLLM, TRT-LLM, Dynamo) inside the active Baseten checkout at the
+default location.
+
 Do not push, create remote branches, or open pull requests unless I explicitly request that remote operation. Local
 commits are allowed.
 
