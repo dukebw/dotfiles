@@ -188,7 +188,22 @@ class ReviewPRTests(unittest.TestCase):
         HELPER.exists(), "Requires the Baseten SGLang development helper"
     )
     def test_full_stack_comparison_pin_change_reuse_and_local_edits(self):
-        # Synthetic upstream releases and numbered patches exercise the real helper.
+        self.check_stack_comparison("numbered", "numbered")
+
+    @unittest.skipUnless(
+        HELPER.exists(), "Requires the Baseten SGLang development helper"
+    )
+    def test_series_stack_comparison_pin_change_reuse_and_local_edits(self):
+        self.check_stack_comparison("series", "series")
+
+    @unittest.skipUnless(
+        HELPER.exists(), "Requires the Baseten SGLang development helper"
+    )
+    def test_numbered_to_series_stack_comparison(self):
+        self.check_stack_comparison("numbered", "series")
+
+    def check_stack_comparison(self, base_format, head_format):
+        # Synthetic upstream releases exercise the real installed helper.
         upstream = self.root / "upstream"
         self.init_repo(upstream)
         (upstream / "model.py").write_text("value = 0\n")
@@ -218,13 +233,24 @@ class ReviewPRTests(unittest.TestCase):
             "diff --git a/model.py b/model.py\n--- a/model.py\n+++ b/model.py\n"
             "@@ -1 +1 @@\n-value = {before}\n+value = {after}\n"
         )
-        first_patch = patches / "001_fixture.patch"
-        first_patch.write_text(header + patch.format(before=0, after=1))
-        baseline = self.commit(self.checkout)
-        first_patch.write_text(header + patch.format(before=0, after=2))
-        (patches / "002_fixture_2.patch").write_text(
-            header + patch.format(before=2, after=3)
+        first_patch = patches / (
+            "001_fixture.patch" if base_format == "numbered" else "z_fixture.patch"
         )
+        first_patch.write_text(header + patch.format(before=0, after=1))
+        if base_format == "series":
+            (patches / "series").write_text(f"{first_patch.name}\n")
+        baseline = self.commit(self.checkout)
+        if base_format != head_format:
+            first_patch = first_patch.rename(patches / "z_fixture.patch")
+        first_patch.write_text(header + patch.format(before=0, after=2))
+        second_patch = patches / (
+            "002_fixture_2.patch" if head_format == "numbered" else "a_fixture.patch"
+        )
+        second_patch.write_text(header + patch.format(before=2, after=3))
+        if head_format == "series":
+            (patches / "series").write_text(
+                f"# Dependency order, not filename order\n{first_patch.name}\n\n{second_patch.name}\n"
+            )
         version.write_text("ENGINE_SHA=v2.0.0\n")
         head = self.commit(self.checkout)
         state_path, state = self.prepare_worktree()
@@ -250,6 +276,8 @@ class ReviewPRTests(unittest.TestCase):
             ["model.py", "upstream_only.py"],
         )
         self.assertEqual(review.git(source, "status", "--porcelain"), "")
+        self.assertEqual(review.git(self.checkout, "status", "--porcelain"), "")
+        self.assertEqual(review.git(self.worktree, "status", "--porcelain"), "")
         with mock.patch.object(
             review, "init_source", side_effect=AssertionError("Unexpected replay")
         ):
@@ -265,9 +293,7 @@ class ReviewPRTests(unittest.TestCase):
                 ),
                 source,
             )
-        (patches / "002_fixture_2.patch").write_text(
-            header + patch.format(before=2, after=4)
-        )
+        second_patch.write_text(header + patch.format(before=2, after=4))
         updated_head = self.commit(self.checkout)
         review.prepare_sglang(
             self.checkout,
@@ -284,16 +310,23 @@ class ReviewPRTests(unittest.TestCase):
         self.assertEqual(
             review.git(source, "show", f"{review.HEAD_REF}:model.py"), "value = 4"
         )
-        (patches / "002_collision.patch").write_text(
-            header + patch.format(before=4, after=5)
-        )
+        if head_format == "numbered":
+            (patches / "002_collision.patch").write_text(
+                header + patch.format(before=4, after=5)
+            )
+            error = "Duplicate patch ordering index 002"
+        else:
+            (patches / "series").write_text(
+                f"{first_patch.name}\n{second_patch.name}\n{first_patch.name}\n"
+            )
+            error = "Duplicate patch in series: z_fixture.patch"
         conflicting_head = self.commit(self.checkout)
         with mock.patch.object(
             review, "cache_pin", side_effect=AssertionError("Unexpected fetch")
         ):
             with self.assertRaisesRegex(
                 RuntimeError,
-                "Proposed SGLang patch stack is invalid: Duplicate patch ordering index 002",
+                f"Proposed SGLang patch stack is invalid: {error}",
             ):
                 review.prepare_sglang(
                     self.checkout,

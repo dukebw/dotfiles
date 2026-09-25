@@ -80,6 +80,9 @@ applied trees. Local edits or unexpected commits stop refresh rather than being
 overwritten. Preparation state and the Zellij layout live in the worktree's Git
 metadata directory.
 
+Historical numbered patch stacks are converted to `series` order only in temporary
+snapshots, so reviews also work across the manifest migration.
+
 For these PRs, an **Applied SGLang source** pane sits collapsed in the same stack
 as **Full PR diff**. Use `Alt-j` / `Alt-k` to switch between them, then press Enter
 to launch the applied view at its expanded size. The applied view compares the

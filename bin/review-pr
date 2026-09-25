@@ -180,6 +180,32 @@ def init_source(helper, project, source, cache):
     )
 
 
+def normalize_legacy_stack(directory):
+    if (directory / "series").exists():
+        return
+    paths = sorted(directory.glob("*.patch"))
+    indices = {}
+    for path in paths:
+        match = re.fullmatch(r"(\d{3})_[a-z][a-z0-9_]*\.patch", path.name)
+        if match is None:
+            raise ValueError(
+                f"Missing series manifest for non-numbered patch: {path.name}"
+            )
+        index = match[1]
+        if index in indices:
+            raise ValueError(
+                f"Duplicate patch ordering index {index}: {indices[index]}, {path.name}"
+            )
+        indices[index] = path.name
+    # Only archived snapshots are adapted; retain historical order and distinct names.
+    names = []
+    for path in paths:
+        name = f"legacy_{path.name}"
+        path.rename(directory / name)
+        names.append(name)
+    (directory / "series").write_text("".join(f"{name}\n" for name in names))
+
+
 def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache):
     source = worktree / PROJECT / "sglang"
     if source.exists():
@@ -201,8 +227,10 @@ def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache)
             validate_patches = runpy.run_path(str(helper))["patches"]
             for label, project in (("Baseline", before), ("Proposed", after)):
                 try:
-                    validate_patches(project)
-                except ValueError as exc:
+                    directory = project / "docker/sglang/patches"
+                    normalize_legacy_stack(directory)
+                    validate_patches(directory)
+                except (ValueError, OSError) as exc:
                     raise RuntimeError(
                         f"{label} SGLang patch stack is invalid: {exc}"
                     ) from None
