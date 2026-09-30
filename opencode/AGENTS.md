@@ -53,13 +53,18 @@ token, rename and recreate the deployment before proceeding.
 
 ## Git workspace policy
 
-Create repository clones and Git worktrees under `~/work/`, not temporary directories.
+Work in `~/work/baseten/` unless I name another checkout. Create another clone or Git worktree only when a task needs
+one, and put it under `~/work/`, not in a temporary directory.
 
 Keep inference-engine and runtime forks (SGLang, vLLM, TRT-LLM, Dynamo) inside the active Baseten checkout at the
 default location.
 
 Do not push, create remote branches, or open pull requests unless I explicitly request that remote operation. Local
 commits are allowed.
+
+Pull requests follow the stack-pr workflow: one commit is one PR. Put a new change up for review as a new commit on the
+current stack, not on a new branch; stack-pr creates the PR branches. Keep each commit's `stack-pr-branch` trailer when
+amending, and load the `stack-pr` skill before viewing or exporting the stack.
 
 When addressing PR review comments, load the `address-pr-review-comments` skill.
 
