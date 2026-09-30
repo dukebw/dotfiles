@@ -16,6 +16,40 @@
     }
   },
   "providers": {
+    "k3f": {
+      "name": "Kimi K3 Flash (dev BIS stack)",
+      "package": "@opencode-ai/ai/providers/openai-compatible",
+      "env": ["K3F_API_KEY"],
+      "settings": {
+        "baseURL": "http://127.0.0.1:18000/v1"
+      },
+      "options": {},
+      "models": {
+        "moonshotai/Kimi-K3-Flash": {
+          "name": "Kimi K3 Flash",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content"
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 49152
+          },
+          "body": {
+            "reasoning_effort": "max"
+          },
+          "variants": [
+            { "id": "low", "body": { "reasoning_effort": "low" } },
+            { "id": "high", "body": { "reasoning_effort": "high" } },
+            { "id": "max", "body": { "reasoning_effort": "max" } }
+          ]
+        }
+      }
+    },
     "openai": {
       "models": {
         "gpt-6.1-sol": {
