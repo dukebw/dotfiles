@@ -17,8 +17,10 @@ Prefer the narrow read-only explore or scout agent over general. When uncertain,
 
 Resolve working paths from the active workspace. A model or topic name does not select a checkout or branch.
 
-Apply cloud-host, devcontainer, and GPU-pod instructions only in that actual execution environment. A missing executable
-does not establish the environment or authorize starting a VM or installing a toolchain.
+Run Baseten tests and builds on my GPU dev pod via `rexec`; if the pod is unreachable, say so.
+
+Otherwise, apply cloud-host, devcontainer, and GPU-pod instructions only in that actual execution environment. A
+missing executable does not establish the environment or authorize starting a VM or installing a toolchain.
 
 Treat resource names, reservations, paths, and running-job statements from earlier work as historical observations.
 Recheck live state before acting; preserve recorded version pins when reproducing an old result rather than treating
