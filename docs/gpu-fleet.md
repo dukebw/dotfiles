@@ -27,9 +27,12 @@ q       quit one nvitop (its pane closes)
    Namespaces are queried concurrently with a server-side Running filter,
    avoiding a download of unrelated namespaces and completed pod history.
 2. Each pane runs `kubectl exec -it <pod> -c <gpu-container>`. It uses an
-   installed `nvitop`, otherwise `uvx --from nvitop nvitop`, and finally
-   `nvidia-smi -l 1`. No ssh shim or port-forward is involved, so a newly
-   Running pod is immediately monitorable and dead tunnels cannot break it.
+   installed `nvitop`, otherwise cached `nvitop` via
+   `uvx --offline --from nvitop nvitop`, and finally `nvidia-smi -l 1` if the
+   offline attempt fails. Monitoring never downloads dependencies, so it
+   works with restricted worker egress. No ssh shim or port-forward is
+   involved, so a newly Running pod is immediately monitorable and dead
+   tunnels cannot break it.
 3. **Incremental reconcile**: pressing `C-a F` re-queries the fleet. If the
    live panes already match, it just toggles the layer. If the fleet changed,
    matching panes stay connected and are repositioned, stale or duplicate panes
@@ -44,8 +47,10 @@ q       quit one nvitop (its pane closes)
   error and the remedy (usually `rcli select`). Re-auth, press `C-a F` again.
 - A pane dies (API stream drop, pod deleted): it closes itself
   (`close-on-exit`); the next `C-a F` reconciles.
-- A GPU image has none of `nvitop`, `uvx`, or `nvidia-smi`: the pane reports
-  the missing monitor and waits for the next reconciliation.
+- `nvitop` is neither installed nor cached: the pane immediately falls back
+  to `nvidia-smi`, without waiting for PyPI access.
+- A GPU image has neither usable offline `nvitop` nor `nvidia-smi`: the pane
+  reports the missing monitor and closes; install a monitor in the image.
 
 ## Knobs
 

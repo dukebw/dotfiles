@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -351,6 +352,68 @@ class B10GPUFleetTests(unittest.TestCase):
         self.assertEqual(kubectl_json_mock.call_count, len(B10_GPU.DEFAULT_FLEET_NAMESPACES))
 
 
+class GPUFleetMonitorTests(unittest.TestCase):
+    def run_monitor(self, tools: dict[str, int]) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as directory:
+            for name, status in tools.items():
+                tool = Path(directory) / name
+                tool.write_text(
+                    f'#!/bin/sh\nprintf "%s\\n" "{name}:$*"\nexit {status}\n'
+                )
+                tool.chmod(0o755)
+            return subprocess.run(
+                ["/bin/sh", "-c", GPU_FLEET.MONITOR_COMMAND],
+                env={"PATH": directory},
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+    def test_installed_nvitop_is_preferred(self) -> None:
+        result = self.run_monitor({"nvitop": 0, "uvx": 0, "nvidia-smi": 0})
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "nvitop:\n")
+
+    def test_cached_nvitop_runs_offline_and_quitting_does_not_start_fallback(self) -> None:
+        result = self.run_monitor({"uvx": 0, "nvidia-smi": 0})
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "uvx:--offline --from nvitop nvitop\n")
+
+    def test_failed_offline_bootstrap_falls_back_to_nvidia_smi(self) -> None:
+        result = self.run_monitor({"uvx": 2, "nvidia-smi": 0})
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stdout,
+            "uvx:--offline --from nvitop nvitop\nnvidia-smi:-l 1\n",
+        )
+        self.assertIn("using nvidia-smi", result.stderr)
+
+    def test_interrupted_nvitop_does_not_start_fallback(self) -> None:
+        for status in (130, 143):
+            with self.subTest(status=status):
+                result = self.run_monitor({"uvx": status, "nvidia-smi": 0})
+
+                self.assertEqual(result.returncode, status)
+                self.assertNotIn("nvidia-smi", result.stdout)
+
+    def test_nvidia_smi_needs_no_uvx(self) -> None:
+        result = self.run_monitor({"nvidia-smi": 0})
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "nvidia-smi:-l 1\n")
+
+    def test_no_usable_monitor_reports_an_error(self) -> None:
+        for tools in ({}, {"uvx": 2}):
+            with self.subTest(tools=tools):
+                result = self.run_monitor(tools)
+
+                self.assertEqual(result.returncode, 127)
+                self.assertIn("no usable offline nvitop or nvidia-smi", result.stderr)
+
+
 class GPUFleetLauncherTests(unittest.TestCase):
     def test_six_panes_use_a_two_by_three_grid(self) -> None:
         geometries = GPU_FLEET.geometry(6)
@@ -397,7 +460,7 @@ class GPUFleetLauncherTests(unittest.TestCase):
                     "container": "main",
                 }
             ),
-            "v6:ali-apse8-mpdev-1:dynamo/worker:main",
+            "v7:ali-apse8-mpdev-1:dynamo/worker:main",
         )
 
     def test_fleet_merges_selected_and_unique_extra_contexts(self) -> None:
@@ -597,13 +660,13 @@ class GPUFleetLauncherTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "GPU_FLEET_PANE=v6:ali-apse8-mpdev-1:mp-devenv/sglang-worker:sglang",
+            "GPU_FLEET_PANE=v7:ali-apse8-mpdev-1:mp-devenv/sglang-worker:sglang",
             command,
         )
         self.assertEqual(command[command.index("-c") + 1], "sglang")
         monitor_command = command[-1]
         self.assertIn("command -v nvitop", monitor_command)
-        self.assertIn("uvx --from nvitop nvitop", monitor_command)
+        self.assertIn("uvx --offline --from nvitop nvitop", monitor_command)
         self.assertIn("nvidia-smi -l 1", monitor_command)
 
 

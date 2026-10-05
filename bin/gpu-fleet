@@ -26,17 +26,26 @@ import sys
 from typing import NoReturn
 
 MARKER = "GPU_FLEET_PANE"  # retained in Zellij's launch command
-PANE_VERSION = 6  # bump when existing panes must be respawned
+PANE_VERSION = 7  # bump when existing panes must be respawned
 MONITOR_COMMAND = """if command -v nvitop >/dev/null 2>&1; then
   exec nvitop
-elif command -v uvx >/dev/null 2>&1; then
-  exec uvx --from nvitop nvitop
-elif command -v nvidia-smi >/dev/null 2>&1; then
+fi
+if command -v uvx >/dev/null 2>&1; then
+  if uvx --offline --from nvitop nvitop; then
+    exit 0
+  else
+    status=$?
+    case "$status" in
+      130|143) exit "$status" ;;
+    esac
+  fi
+fi
+if command -v nvidia-smi >/dev/null 2>&1; then
+  echo 'gpu-fleet: nvitop unavailable offline; using nvidia-smi' >&2
   exec nvidia-smi -l 1
-else
-  echo 'gpu-fleet: container has no nvitop, uvx, or nvidia-smi' >&2
-  exit 127
-fi"""
+fi
+echo 'gpu-fleet: container has no usable offline nvitop or nvidia-smi' >&2
+exit 127"""
 
 
 def fail(msg: str) -> NoReturn:
