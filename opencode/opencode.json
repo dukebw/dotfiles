@@ -157,7 +157,10 @@
             "context": 1048576,
             "input": 900000,
             "output": 131072
-          }
+          },
+          "variants": [
+            { "id": "max", "settings": { "reasoningEffort": "max" } }
+          ]
         },
         "deepseek-ai/DeepSeek-V4.1-Flash": {
           "name": "DeepSeek V4.1 Flash",
@@ -240,8 +243,8 @@
     "build": {
       "model": "openai/gpt-6.1-sol#xhigh"
     },
-    "explore": { "model": "openai/gpt-6.1-sol#high" },
-    "general": { "model": "openai/gpt-6.1-sol#high" }
+    "explore": { "model": "baseten/moonshotai/Kimi-K3#max" },
+    "general": { "model": "baseten/moonshotai/Kimi-K3#max" }
   },
   "lsp": {
     "pyright": {
