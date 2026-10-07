@@ -64,6 +64,18 @@
             "output": 128000
           }
         },
+        "gpt-6.1-sol-fast": {
+          "settings": {
+            "reasoningEffort": "xhigh",
+            "reasoningSummary": "auto",
+            "include": ["reasoning.encrypted_content"]
+          },
+          "limit": {
+            "context": 1050000,
+            "input": 922000,
+            "output": 128000
+          }
+        },
         "gpt-6-astra-fast": {
           "limit": {
             "context": 1000000,
