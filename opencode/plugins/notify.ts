@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { Plugin } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
 
 const execute = promisify(execFile);
 const sessionLookupDelaysMs = [0, 250, 750];
@@ -160,21 +160,10 @@ export default Plugin.define({
                 title: "opencode — turn failed",
               };
             }
-            if (event.type === "question.asked") {
-              return {
-                sessionID: event.data.sessionID,
-                title: "opencode — question",
-                message: event.data.questions?.[0]?.question ?? "Input needed",
-              };
-            }
           })();
           if (!notification) continue;
 
-          await notifySession(
-            notification.sessionID,
-            notification.title,
-            notification.message,
-          );
+          await notifySession(notification.sessionID, notification.title);
         } catch (error) {
           console.error("OpenCode notification failed", error);
         }
