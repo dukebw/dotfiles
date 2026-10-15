@@ -81,6 +81,12 @@ extend it in this change unless the requested behavior cannot work without it; r
 checks and verification scripts out of the repository. Commit tests only where the task asks for them or the repository
 already keeps tests for this kind of change, sized like the neighboring test files.
 
+## Nsight Systems
+
+For any `nsys` work (capturing or analyzing `.nsys-rep` reports, report SQL, recipes, CLI syntax), first read
+`/Applications/NVIDIA Nsight Systems.app/Contents/skills/nsight-systems/SKILL.md` and follow it, including its
+platform bootstrap. Its scripts run on this Mac; on a GPU pod, use the `nsys` installed there.
+
 ## Terminal output
 
 Paste URLs verbatim on their own line, never as markdown links; markdown links are not clickable in my terminal.
