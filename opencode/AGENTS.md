@@ -41,10 +41,9 @@ configuration when available.
 
 ## Baseten cluster access
 
-Before concluding that a workload-plane kubeconfig is unavailable, run `rcli sync --provider rancher` and use
-`rcli select --provider rancher` to select the cluster. `rcli select` chooses from the kubeconfigs synced under
-`~/.rcli/kubeconfig/`; access still depends on Kubernetes RBAC. Verify the required operation with `kubectl auth can-i`
-before treating access as a blocker.
+Before concluding that a workload-plane kubeconfig is unavailable, run `rcli sync` and use
+`~/.rcli/kubeconfig/tailscale/<cluster>.yaml`. Verify the required operation with `kubectl auth can-i` before treating
+access as a blocker.
 
 ## Baseten deployment naming
 
