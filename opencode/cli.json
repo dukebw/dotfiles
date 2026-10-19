@@ -14,7 +14,7 @@
   "session": {
     "sidebar": "hide",
     "scrollbar": false,
-    "thinking": "show"
+    "thinking": "hide"
   },
   "tabs": {
     "enabled": false
