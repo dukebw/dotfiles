@@ -162,17 +162,35 @@ def cache_pin(cache, pin):
 
 
 def init_source(helper, project, source, cache):
-    # Use the installed development helper, not executable code from the PR.
+    # Mirror the helper's init_sglang through patch_stack primitives loaded from the
+    # installed checkout (never the PR's code), skipping description() validation:
+    # headers gate patch export, not the application of a historical stack under review.
     run(
         sys.executable,
         "-B",
         "-c",
-        "import runpy,sys; from pathlib import Path; "
-        "helper=runpy.run_path(sys.argv.pop(1)); "
-        "project=Path(sys.argv.pop(1)); helper['main'](project)",
+        "import dataclasses,importlib,os,runpy,subprocess,sys\n"
+        "from pathlib import Path\n"
+        "entrypoint = Path(sys.argv.pop(1))\n"
+        "sys.path.insert(0, str(entrypoint.parent))\n"
+        "helper = runpy.run_path(str(entrypoint))\n"
+        "ps = importlib.import_module('patch_stack')\n"
+        "project = dataclasses.replace(helper['PROJECT'], root=Path(sys.argv.pop(1)))\n"
+        "source = Path(os.environ[project.source_env])\n"
+        "stack = [(p, p.read_text().split('diff --git ', 1)[0].strip())\n"
+        "         for p in ps.patches(project.patch_dir)]\n"
+        "clone = source.with_name(source.name + '.tmp')\n"
+        "subprocess.run(['git', 'clone', '--no-checkout', '--', project.git_url,\n"
+        "                str(clone)], check=True)\n"
+        "ps.git(clone, 'checkout', '-b', 'baseten-patches', project.pin(), capture=False)\n"
+        "base = ps.git(clone, 'rev-parse', 'HEAD').strip()\n"
+        "ps.apply_stack(clone, stack)\n"
+        "ps.save(project, clone, dict(base=base, version=project.pin(),\n"
+        "    exported=ps.git(clone, 'rev-parse', 'HEAD').strip(),\n"
+        "    fingerprint=ps.fingerprint(project)))\n"
+        "clone.rename(source)\n",
         helper,
         project,
-        "init_sglang",
         env={
             **os.environ,
             "SGLANG_SOURCE_DIR": str(source),
@@ -225,7 +243,7 @@ def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache)
             scratch = Path(temporary)
             before, old_pin = snapshot(checkout, baseline, scratch / "base")
             after, new_pin = snapshot(checkout, head, scratch / "head")
-            validate_patches = runpy.run_path(str(helper))["patches"]
+            validate_patches = runpy.run_path(str(helper.parent / "patch_stack.py"))["patches"]
             for label, project in (("Baseline", before), ("Proposed", after)):
                 try:
                     directory = project / "docker/sglang/patches"
