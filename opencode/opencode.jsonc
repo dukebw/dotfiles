@@ -12,7 +12,7 @@
         "url": "https://mcp.slack.com/mcp",
         "disabled": false,
         "oauth": {
-          "client_id": "549215267044.11597103110386",
+          "client_id": "549215267044.12328925678677",
           "redirect_uri": "http://127.0.0.1:19876/mcp/oauth/callback",
           "scope": "search:read.public search:read.private search:read.mpim search:read.im search:read.files search:read.users channels:history groups:history mpim:history im:history canvases:read users:read users:read.email reactions:read emoji:read files:read channels:read groups:read mpim:read"
         }
