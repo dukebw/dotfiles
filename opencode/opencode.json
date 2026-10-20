@@ -1,6 +1,9 @@
 {
   "model": "openai/gpt-6.1-sol",
   "$schema": "https://opencode.ai/config.json",
+  "experimental": {
+    "todo": true
+  },
   "mcp": {
     "servers": {
       "notion": {
