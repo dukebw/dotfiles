@@ -1,18 +1,3 @@
-## Subagent policy
-
-Default to completing work in the current agent.
-
-Do not spawn a subagent merely to search the repository, inspect a small number of files, or perform work that is
-sequential.
-
-Use a subagent only when:
-
-- I explicitly request delegation, or
-- there are at least two independent, bounded workstreams that can proceed in parallel and delegation is likely to
-  materially reduce wall-clock time.
-
-Prefer the narrow read-only explore or scout agent over general. When uncertain, do not delegate.
-
 ## Execution context
 
 Resolve working paths from the active workspace. A model or topic name does not select a checkout or branch.
