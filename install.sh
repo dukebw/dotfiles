@@ -51,6 +51,7 @@ backup_and_link() {
 
 backup_and_link "$DOTFILES_DIR/zsh/.zshrc" "$HOME/.zshrc"
 backup_and_link "$DOTFILES_DIR/git/.gitconfig" "$HOME/.gitconfig"
+backup_and_link "$DOTFILES_DIR/git/.gitconfig-baseten" "$HOME/.gitconfig-baseten"
 
 mkdir -p "$HOME/.config/zellij"
 backup_and_link "$DOTFILES_DIR/zellij/config.kdl" "$HOME/.config/zellij/config.kdl"
