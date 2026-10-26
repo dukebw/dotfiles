@@ -3,7 +3,7 @@ prSections:
       filters: is:open author:@me sort:updated-desc
       limit: 50
     - title: Following
-      filters: is:open author:jyizheng author:keer2607 author:Hrithvik-Alex author:bdubayah author:Wirick author:AaryamSharmaBaseten author:michaelfeil author:mahmoudhas author:dmtri35 author:adesai773 author:Stelath author:ShounakRay author:yikaizhu-baseten
+      filters: is:open author:Aayush1104 author:jyizheng author:keer2607 author:Hrithvik-Alex author:bdubayah author:Wirick author:AaryamSharmaBaseten author:michaelfeil author:mahmoudhas author:dmtri35 author:adesai773 author:Stelath author:ShounakRay author:yikaizhu-baseten
       limit: 12
 issuesSections:
     - title: My Issues
