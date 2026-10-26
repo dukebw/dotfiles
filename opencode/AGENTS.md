@@ -37,6 +37,9 @@ exact contiguous segment `-debugging-brendanduke` before any controller-generate
 every generated pod name contains both `debugging` and `brendanduke`; if Grove or Kubernetes truncation removes either
 token, rename and recreate the deployment before proceeding.
 
+Exception: a Baseten model deployment created through the management API, whose pods MCM names `bt-llm-<hash>-…`,
+carries the segment in its deployment display name only; skip the pod-name check.
+
 ## Git workspace policy
 
 Work in `~/work/baseten/` unless I name another checkout. Create another clone or Git worktree only when a task needs
