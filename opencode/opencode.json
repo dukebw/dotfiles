@@ -157,6 +157,78 @@
         }
       }
     },
+    "kimi": {
+      "package": "@opencode/ai/providers/openai-compatible",
+      "env": ["KIMI_API_KEY"],
+      "settings": {
+        "baseURL": "https://api.moonshot.ai/v1",
+        "apiKey": "{env:KIMI_API_KEY}"
+      },
+      "models": {
+        "kimi-k3.1-pro": {
+          "name": "Kimi K3.1 Pro",
+          "family": "kimi-k3",
+          "releaseDate": "2026-10-23",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content"
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 1048576
+          },
+          "cost": {
+            "input": 2,
+            "output": 10,
+            "cache_read": 0.2,
+            "cache_write": 2
+          },
+          "body": {
+            "reasoning_effort": "max"
+          },
+          "variants": [
+            { "id": "low", "body": { "reasoning_effort": "low" } },
+            { "id": "high", "body": { "reasoning_effort": "high" } },
+            { "id": "max", "body": { "reasoning_effort": "max" } }
+          ]
+        },
+        "kimi-k3.1-pro-highspeed": {
+          "name": "Kimi K3.1 Pro Highspeed",
+          "family": "kimi-k3",
+          "releaseDate": "2026-10-23",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content"
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 1048576
+          },
+          "cost": {
+            "input": 4,
+            "output": 20,
+            "cache_read": 0.2,
+            "cache_write": 4
+          },
+          "body": {
+            "reasoning_effort": "max"
+          },
+          "variants": [
+            { "id": "low", "body": { "reasoning_effort": "low" } },
+            { "id": "high", "body": { "reasoning_effort": "high" } },
+            { "id": "max", "body": { "reasoning_effort": "max" } }
+          ]
+        }
+      }
+    },
     "baseten": {
       "models": {
         "moonshotai/Kimi-K3": {
