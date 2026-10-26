@@ -22,7 +22,7 @@ PROJECT = Path("mp/baseten_dynamo/cache_aware_routing_trtllm")
 STACK_PATHS = (PROJECT / "docker/sglang/patches", PROJECT / "versions/sglang.env")
 BASE_REF = "refs/pr-review/base"
 HEAD_REF = "refs/pr-review/head"
-REVIEW_MODEL = "openai/gpt-6-astra#xhigh"
+REVIEW_MODEL = "openai/gpt-6.1-sol#xhigh"
 
 
 def run(*args, cwd=None, env=None):
