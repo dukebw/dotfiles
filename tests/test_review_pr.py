@@ -69,19 +69,40 @@ class ReviewPRTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not created by review-pr"):
             self.prepare_worktree()
 
-    def test_existing_review_reuses_worktree_with_local_edits(self):
+    def test_agent_review_prepares_missing_worktree(self):
+        def prepare(repo, number, work):
+            state_path, _ = self.prepare_worktree()
+            return self.worktree, self.worktree, "HEAD..HEAD", state_path.parent
+
+        self.assertFalse(self.worktree.exists())
+        with mock.patch.object(review, "prepare", side_effect=prepare) as prepare_mock:
+            worktree, metadata = review.prepare_agent_review(
+                "basetenlabs/baseten", 1, self.root
+            )
+        prepare_mock.assert_called_once_with("basetenlabs/baseten", 1, self.root)
+        self.assertEqual(worktree, self.worktree)
+        self.assertTrue((metadata / "state.json").exists())
+        self.assertEqual((worktree / "file").read_text(), "original\n")
+
+    def test_agent_review_reuses_worktree_with_local_edits(self):
         state_path, state = self.prepare_worktree()
         (self.worktree / "file").write_text("work in progress\n")
-        self.assertEqual(
-            review.existing_review("basetenlabs/baseten", 1, self.root),
-            (self.worktree, state_path.parent),
-        )
+        with mock.patch.object(
+            review, "prepare", side_effect=AssertionError("Unexpected refresh")
+        ):
+            self.assertEqual(
+                review.prepare_agent_review("basetenlabs/baseten", 1, self.root),
+                (self.worktree, state_path.parent),
+            )
         self.assertEqual((self.worktree / "file").read_text(), "work in progress\n")
         self.assertEqual(review.git(self.worktree, "rev-parse", "HEAD"), state["head"])
-        with self.assertRaisesRegex(RuntimeError, "Open this PR with R first"):
-            review.existing_review("basetenlabs/baseten", 2, self.root)
         with self.assertRaisesRegex(RuntimeError, "belongs to"):
-            review.existing_review("other/baseten", 1, self.root)
+            review.prepare_agent_review("other/baseten", 1, self.root)
+
+    def test_agent_review_does_not_claim_existing_worktree(self):
+        review.git(self.checkout, "worktree", "add", "--detach", self.worktree, "HEAD")
+        with self.assertRaisesRegex(RuntimeError, "not created by review-pr"):
+            review.prepare_agent_review("basetenlabs/baseten", 1, self.root)
 
     def test_prepare_uses_merge_base_and_refreshes_only_review_worktree(self):
         baseline = review.git(self.checkout, "rev-parse", "HEAD")

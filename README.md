@@ -97,8 +97,9 @@ the workspace without opening views.
 
 ### Agent review
 
-After `R` creates the worktree, press `A` in gh-dash or run `review-pr 28978 --ai`.
-This opens interactive OpenCode there with your normal settings and the prompt:
+Press `A` in gh-dash or run `review-pr 28978 --ai`. This prepares the PR worktree
+if it is missing, or reuses it without refreshing or overwriting local edits.
+It opens only interactive OpenCode there with your normal settings and the prompt:
 `Review PR basetenlabs/baseten#28978 in this git worktree.`
 
 To return later, run `opencode session list` from the worktree, then open the

@@ -353,10 +353,11 @@ def prepare(repo, number, work):
     return worktree, source, diff_range, state_path.parent
 
 
-def existing_review(repo, number, work):
+def prepare_agent_review(repo, number, work):
     worktree = work / f"{repo.split('/')[1]}-pr{number}"
     if not worktree.exists():
-        raise RuntimeError(f"Open this PR with R first to create {worktree}")
+        worktree, _, _, metadata = prepare(repo, number, work)
+        return worktree, metadata
     metadata = Path(git(worktree, "rev-parse", "--absolute-git-dir")) / "pr-review"
     state_path = metadata / "state.json"
     if not state_path.exists():
@@ -430,23 +431,25 @@ def main():
     mode.add_argument(
         "--ai",
         action="store_true",
-        help="Open interactive OpenCode in the worktree already created by R",
+        help="Open interactive OpenCode, preparing the PR worktree if needed",
     )
     args = parser.parse_args()
     if args.number <= 0 or not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         parser.error("Use a positive PR number and an owner/repo name")
     work = Path.home() / "work"
-    if args.ai:
-        worktree, metadata = existing_review(args.repo, args.number, work)
-        view = metadata / "agent.kdl"
-        view.write_text(agent_layout(args.repo, args.number, worktree))
-    else:
-        work.mkdir(exist_ok=True)
-        with (work / ".pr-review.lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+    work.mkdir(exist_ok=True)
+    with (work / ".pr-review.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if args.ai:
+            worktree, metadata = prepare_agent_review(args.repo, args.number, work)
+        else:
             worktree, source, diff_range, metadata = prepare(
                 args.repo, args.number, work
             )
+    if args.ai:
+        view = metadata / "agent.kdl"
+        view.write_text(agent_layout(args.repo, args.number, worktree))
+    else:
         view = metadata / "layout.kdl"
         view.write_text(layout(args.repo, args.number, worktree, source, diff_range))
     if args.prepare_only:
