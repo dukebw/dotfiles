@@ -69,40 +69,103 @@ class ReviewPRTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not created by review-pr"):
             self.prepare_worktree()
 
-    def test_agent_review_prepares_missing_worktree(self):
-        def prepare(repo, number, work):
-            state_path, _ = self.prepare_worktree()
-            return self.worktree, self.worktree, "HEAD..HEAD", state_path.parent
-
-        self.assertFalse(self.worktree.exists())
-        with mock.patch.object(review, "prepare", side_effect=prepare) as prepare_mock:
-            worktree, metadata = review.prepare_agent_review(
-                "basetenlabs/baseten", 1, self.root
-            )
-        prepare_mock.assert_called_once_with("basetenlabs/baseten", 1, self.root)
-        self.assertEqual(worktree, self.worktree)
-        self.assertTrue((metadata / "state.json").exists())
-        self.assertEqual((worktree / "file").read_text(), "original\n")
-
-    def test_agent_review_reuses_worktree_with_local_edits(self):
+    def test_review_worktree_repo_mismatch_is_rejected(self):
         state_path, state = self.prepare_worktree()
-        (self.worktree / "file").write_text("work in progress\n")
-        with mock.patch.object(
-            review, "prepare", side_effect=AssertionError("Unexpected refresh")
-        ):
-            self.assertEqual(
-                review.prepare_agent_review("basetenlabs/baseten", 1, self.root),
-                (self.worktree, state_path.parent),
-            )
-        self.assertEqual((self.worktree / "file").read_text(), "work in progress\n")
-        self.assertEqual(review.git(self.worktree, "rev-parse", "HEAD"), state["head"])
         with self.assertRaisesRegex(RuntimeError, "belongs to"):
-            review.prepare_agent_review("other/baseten", 1, self.root)
+            review.prepare_worktree(
+                self.checkout, self.worktree, "other/baseten", state["head"]
+            )
+        self.assertEqual(json.loads(state_path.read_text()), state)
 
-    def test_agent_review_does_not_claim_existing_worktree(self):
-        review.git(self.checkout, "worktree", "add", "--detach", self.worktree, "HEAD")
-        with self.assertRaisesRegex(RuntimeError, "not created by review-pr"):
-            review.prepare_agent_review("basetenlabs/baseten", 1, self.root)
+    def test_main_opens_review_tabs_in_both_zellij_launch_modes(self):
+        work = self.root / "work"
+        work.mkdir()
+        self.checkout = self.checkout.rename(work / "baseten")
+        self.worktree = work / "baseten-pr1"
+        baseline = review.git(self.checkout, "rev-parse", "HEAD")
+        (self.checkout / "file").write_text("PR change\n")
+        head = self.commit(self.checkout)
+        review.git(self.checkout, "update-ref", "refs/pull/1/head", head)
+        execute = review.run
+        opened = []
+
+        def local_tools(*args, **kwargs):
+            if args[:3] == ("gh", "pr", "view"):
+                return json.dumps({"headRefOid": head, "baseRefOid": baseline})
+            if args[0] == "zellij":
+                opened.append(args)
+                return ""
+            args = tuple(
+                str(self.checkout)
+                if arg == "https://github.com/basetenlabs/baseten.git"
+                else arg
+                for arg in args
+            )
+            return execute(*args, **kwargs)
+
+        with (
+            mock.patch.object(review.Path, "home", return_value=self.root),
+            mock.patch.object(review, "run", side_effect=local_tools),
+        ):
+            for options, in_session in (
+                (["--ai"], True),
+                (["--ai"], False),
+                ([], True),
+                ([], False),
+                (["--prepare-only"], True),
+            ):
+                with (
+                    self.subTest(options=options, in_session=in_session),
+                    mock.patch.object(review.sys, "argv", ["review-pr", "1", *options]),
+                    mock.patch.dict(
+                        review.os.environ,
+                        {"ZELLIJ_SESSION_NAME": "review-test" if in_session else ""},
+                    ),
+                    mock.patch.object(review.os, "execvp") as attach,
+                ):
+                    opened.clear()
+                    review.main()
+                    git_dir = review.git(
+                        self.worktree, "rev-parse", "--absolute-git-dir"
+                    )
+                    metadata = Path(git_dir) / "pr-review"
+                    filename = "agent.kdl" if "--ai" in options else "layout.kdl"
+                    view = metadata / filename
+                    contents = view.read_text()
+                    tabs = re.findall(r'^\s*tab name="([^"]+)"', contents, re.M)
+                    self.assertEqual(
+                        tabs, ["PR 1", "AI review 1"] if "--ai" in options else ["PR 1"]
+                    )
+                    self.assertIn('tab name="PR 1" focus=true', contents)
+                    self.assertIn('pane name="GitHub review #1"', contents)
+                    self.assertIn(f"DiffviewOpen {baseline}..{head}", contents)
+                    if "--ai" in options:
+                        self.assertIn('pane name="OpenCode review"', contents)
+                        self.assertIn(f'"--model" "{review.REVIEW_MODEL}"', contents)
+                    if "--prepare-only" in options:
+                        self.assertEqual(opened, [])
+                        attach.assert_not_called()
+                    elif in_session:
+                        self.assertEqual(
+                            opened, [("zellij", "action", "new-tab", "--layout", view)]
+                        )
+                        attach.assert_not_called()
+                    else:
+                        self.assertEqual(opened, [])
+                        attach.assert_called_once_with(
+                            "zellij", ["zellij", "--layout", str(view)]
+                        )
+            (self.worktree / "file").write_text("local edit\n")
+            opened.clear()
+            with (
+                mock.patch.object(review.sys, "argv", ["review-pr", "1", "--ai"]),
+                mock.patch.object(review.os, "execvp") as attach,
+                self.assertRaisesRegex(RuntimeError, "Preserve local changes"),
+            ):
+                review.main()
+            self.assertEqual(opened, [])
+            attach.assert_not_called()
+            self.assertEqual((self.worktree / "file").read_text(), "local edit\n")
 
     def test_prepare_uses_merge_base_and_refreshes_only_review_worktree(self):
         baseline = review.git(self.checkout, "rev-parse", "HEAD")
@@ -204,6 +267,17 @@ class ReviewPRTests(unittest.TestCase):
         self.assertIn("start_suspended=true", applied)
         self.assertIn(f'cwd "{source}"', applied)
         self.assertIn(f"DiffviewOpen {review.BASE_REF}..{review.HEAD_REF}", applied)
+        combined = review.layout(
+            "basetenlabs/baseten",
+            1,
+            worktree,
+            applied_source,
+            diff_range,
+            include_agent=True,
+        )
+        self.assertIn('pane name="Full PR diff"', combined)
+        self.assertIn('pane name="Applied SGLang source"', combined)
+        self.assertIn('pane name="OpenCode review"', combined)
 
     @unittest.skipUnless(
         HELPER.exists(), "Requires the Baseten SGLang development helper"

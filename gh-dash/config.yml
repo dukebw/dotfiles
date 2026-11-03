@@ -87,7 +87,7 @@ keybindings:
           name: Review PR and applied source
           command: '$HOME/.local/bin/review-pr {{.PrNumber}} --repo {{.RepoName}}'
         - key: A
-          name: Open OpenCode in PR worktree
+          name: Review PR with AI
           command: '$HOME/.local/bin/review-pr {{.PrNumber}} --repo {{.RepoName}} --ai'
 repoPaths: {}
 theme:

@@ -353,24 +353,9 @@ def prepare(repo, number, work):
     return worktree, source, diff_range, state_path.parent
 
 
-def prepare_agent_review(repo, number, work):
-    worktree = work / f"{repo.split('/')[1]}-pr{number}"
-    if not worktree.exists():
-        worktree, _, _, metadata = prepare(repo, number, work)
-        return worktree, metadata
-    metadata = Path(git(worktree, "rev-parse", "--absolute-git-dir")) / "pr-review"
-    state_path = metadata / "state.json"
-    if not state_path.exists():
-        raise RuntimeError(f"{worktree} was not created by review-pr")
-    state = json.loads(state_path.read_text())
-    if state["repo"] != repo:
-        raise RuntimeError(f"{worktree} belongs to {state['repo']}, not {repo}")
-    return worktree, metadata
-
-
-def review_tab(name, panes):
-    return f"""layout {{
-    tab name={json.dumps(name)} {{
+def review_tab(name, panes, *, focus=False):
+    focused = " focus=true" if focus else ""
+    return f"""    tab name={json.dumps(name)}{focused} {{
     pane size=1 borderless=true {{
         plugin location="zellij:tab-bar"
     }}
@@ -379,10 +364,10 @@ def review_tab(name, panes):
         plugin location="zellij:status-bar"
     }}
     }}
-}}\n"""
+"""
 
 
-def layout(repo, number, worktree, source, diff_range):
+def layout(repo, number, worktree, source, diff_range, *, include_agent=False):
     quote = json.dumps
     expanded = " expanded=true" if source != worktree else ""
     diffs = f"""pane name="Full PR diff" command="nvim" close_on_exit=true focus=true{expanded} {{
@@ -405,10 +390,13 @@ def layout(repo, number, worktree, source, diff_range):
         {diffs}
     }}
 '''
-    return review_tab(f"PR {number}", panes)
+    tabs = review_tab(f"PR {number}", panes, focus=True)
+    if include_agent:
+        tabs += agent_tab(repo, number, worktree)
+    return f"layout {{\n{tabs}}}\n"
 
 
-def agent_layout(repo, number, worktree):
+def agent_tab(repo, number, worktree):
     prompt = f"Review PR {repo}#{number} in this git worktree."
     # mini takes its project directory from cwd; only run and mini accept --model.
     pane = f"""pane name="OpenCode review" command="opencode" close_on_exit=true {{
@@ -431,7 +419,7 @@ def main():
     mode.add_argument(
         "--ai",
         action="store_true",
-        help="Open interactive OpenCode, preparing the PR worktree if needed",
+        help="Open the manual review and interactive OpenCode together",
     )
     args = parser.parse_args()
     if args.number <= 0 or not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
@@ -440,18 +428,13 @@ def main():
     work.mkdir(exist_ok=True)
     with (work / ".pr-review.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if args.ai:
-            worktree, metadata = prepare_agent_review(args.repo, args.number, work)
-        else:
-            worktree, source, diff_range, metadata = prepare(
-                args.repo, args.number, work
-            )
-    if args.ai:
-        view = metadata / "agent.kdl"
-        view.write_text(agent_layout(args.repo, args.number, worktree))
-    else:
-        view = metadata / "layout.kdl"
-        view.write_text(layout(args.repo, args.number, worktree, source, diff_range))
+        worktree, source, diff_range, metadata = prepare(args.repo, args.number, work)
+    view = metadata / ("agent.kdl" if args.ai else "layout.kdl")
+    view.write_text(
+        layout(
+            args.repo, args.number, worktree, source, diff_range, include_agent=args.ai
+        )
+    )
     if args.prepare_only:
         return
     if os.environ.get("ZELLIJ_SESSION_NAME"):

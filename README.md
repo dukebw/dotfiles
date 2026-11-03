@@ -97,9 +97,11 @@ the workspace without opening views.
 
 ### Agent review
 
-Press `A` in gh-dash or run `review-pr 28978 --ai`. This prepares the PR worktree
-if it is missing, or reuses it without refreshing or overwriting local edits.
-It opens only interactive OpenCode there with your normal settings and the prompt:
+Press `A` in gh-dash or run `review-pr 28978 --ai` to open both the normal manual
+review tab and an interactive OpenCode review tab. The manual diff stays focused
+while the AI reviews in the other tab. Preparation and refresh use the same safety
+checks as `R`: local edits or unexpected commits stop refresh rather than being
+overwritten. OpenCode starts with your normal settings and the prompt:
 `Review PR basetenlabs/baseten#28978 in this git worktree.`
 
 To return later, run `opencode session list` from the worktree, then open the
