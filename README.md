@@ -51,7 +51,7 @@ cd ~/dotfiles && ./install.sh
 - `bin/rexec` - run commands in a configured Kubernetes pod over an SSH shim
 - `bin/r` - flush local changes with Mutagen, run remote command, and capture local logs
 - `bin/rlog` - run remote command and mirror logs from `/home/ubuntu/shared/logs`
-- `bin/b10-gpu` - inspect Vultr B200 dev nodes, map GPU owners, and move the configured `rexec` pod
+- `bin/b10-gpu` - list the GPU containers you own (the query behind `gpu-fleet`)
 - `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
 - `bin/opencode` - OpenCode 2 shim backed by the versioned local installation
 - `bin/opencode-mcp-remote` - compatibility bridge for older remote MCP servers
@@ -177,20 +177,12 @@ For MP dev pods, which `intertubin` creates and manages, that guide uses
 
 ## Baseten GPU Dev Helpers
 
-`b10-gpu` wraps the common Vultr B200 dev-node operations:
-
-```bash
-b10-gpu nodes
-b10-gpu status --all
-b10-gpu status f307cc291a7c
-b10-gpu pods f307cc291a7c
-b10-gpu owner f307cc291a7c
-b10-gpu move f307cc291a7c --dry-run
-```
+`b10-gpu fleet` lists the GPU containers you own; `gpu-fleet` builds on it. For
+node, GPU, and dev-pod management, use `intertubin`.
 
 It uses the current `kubectl` context selected by `rcli select` and the matching
 rcli-generated kubeconfig under `~/.rcli/kubeconfig/`. See
-[`docs/b10-gpu.md`](docs/b10-gpu.md) for command details and smoke tests.
+[`docs/b10-gpu.md`](docs/b10-gpu.md) for details.
 
 ## Remote Log Sync
 
