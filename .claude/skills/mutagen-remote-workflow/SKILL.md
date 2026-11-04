@@ -70,14 +70,16 @@ so check the pod still exists before using a registry entry.
 
 Once `intertubin` has a Running workspace (`intertubin pods --me` lists it):
 
-1. Add the pod to `~/.config/rexec/pods.yaml` with its cluster's kubeconfig,
-`namespace: mp-devenv`, a unique alias, and an unused local port:
+1. Add the pod to `~/.config/rexec/pods.yaml` with its rcli cluster name,
+`namespace: mp-devenv`, a unique alias, and an unused local port. `cluster`
+resolves to the kubeconfig `rcli sync` writes under rcli's `default_provider`
+(Tailscale); do not hard-code a provider path:
 
 ```yaml
 pods:
   apse7:
     pod: mp-debugging-brendanduke-dev-pod-b300-0
-    kubeconfig: ~/.rcli/kubeconfig/rancher/ali-apse7-mpdev-1.yaml
+    cluster: ali-apse7-mpdev-1
     namespace: mp-devenv
     ssh_alias: baseten-apse7-dev-pod
     ssh_local_port: 22232
@@ -143,19 +145,22 @@ rexec --shell 'pwd && ls'
 Pod registry `~/.config/rexec/pods.yaml`:
 
 ```yaml
-default: e7e4
-kubeconfig: ~/.rcli/kubeconfig/vultr-us-sea-prod-1.yaml
-namespace: baseten
+namespace: mp-devenv
 pods:
   e7e4:
     pod: brendanduke-dev-pod-b200-0
+    cluster: vul-sea-mpdev-1
     ssh_alias: baseten-dev-pod
     ssh_local_port: 22222
   21ca:
     pod: brendanduke-tp8-dev-pod-b200-0
+    cluster: vul-sea-mpdev-1
     ssh_alias: baseten-tp8-pod
     ssh_local_port: 22223
 ```
+
+`cluster` resolves to `~/.rcli/kubeconfig/<default_provider>/<cluster>.yaml`
+from `~/.rcli/config.yaml`; an explicit `kubeconfig:` path overrides it.
 
 Worktree `.rexec.yaml` (sync facts only; pod-reachability keys here are a
 legacy config and fail loud with migration instructions):

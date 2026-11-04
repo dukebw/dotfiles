@@ -36,6 +36,7 @@ DEFAULT_CONFIG = Path.home() / ".config" / "rexec" / "config.yaml"
 PROJECT_CONFIG_NAME = ".rexec.yaml"
 DEFAULT_STATE_DIR = Path.home() / ".config" / "rexec"
 POD_REGISTRY = Path.home() / ".config" / "rexec" / "pods.yaml"
+RCLI_DIR = Path.home() / ".rcli"
 # Pod-reachability keys are registry-only (ADR 0002); their presence in a
 # worktree config marks a pre-registry file that must be migrated, not honored.
 LEGACY_POD_KEYS = (
@@ -48,6 +49,7 @@ LEGACY_POD_KEYS = (
     "ssh_key",
     "mutagen_session",
     "kubeconfig",
+    "cluster",
     "namespace",
 )
 SSH_CONFIG = Path.home() / ".ssh" / "config"
@@ -101,11 +103,10 @@ def load_registry() -> dict[str, Any]:
         raise SystemExit(
             f"Missing pod registry: {POD_REGISTRY}\n"
             "Declare your pods once, globally:\n"
-            "  default: e7e4\n"
-            "  kubeconfig: ~/.rcli/kubeconfig/<cluster>.yaml\n"
-            "  namespace: baseten\n"
+            "  namespace: mp-devenv\n"
             "  pods:\n"
             "    e7e4:\n"
+            "      cluster: <rcli cluster name>\n"
             "      pod: <k8s pod name>\n"
             "      ssh_alias: <alias>\n"
             "      ssh_local_port: 22222\n"
@@ -169,6 +170,23 @@ def select_pod_key(registry: dict[str, Any], flag_value: str | None) -> str:
     return key
 
 
+def rcli_kubeconfig(cluster: str) -> str:
+    """The kubeconfig `rcli sync` writes for cluster under rcli's default provider."""
+    config_path = RCLI_DIR / "config.yaml"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        raise SystemExit(f"Missing rcli config {config_path}: run `rcli init`") from None
+    provider = config.get("default_provider") if isinstance(config, dict) else None
+    if not isinstance(provider, str) or not provider:
+        raise SystemExit(f"No default_provider in {config_path}: run `rcli init`")
+    path = RCLI_DIR / "kubeconfig" / provider / f"{cluster}.yaml"
+    if not path.exists():
+        raise SystemExit(f"No {provider} kubeconfig for cluster {cluster!r} at {path}: run `rcli sync`")
+    return str(path)
+
+
 def resolve_pod_entry(registry: dict[str, Any], key: str) -> dict[str, Any]:
     """A registry entry merged over registry-level then hardcoded ssh defaults."""
     merged: dict[str, Any] = {
@@ -177,16 +195,23 @@ def resolve_pod_entry(registry: dict[str, Any], key: str) -> dict[str, Any]:
         "ssh_remote_port": 2222,
         "ssh_key": str(DEFAULT_STATE_DIR / "pod_ed25519"),
     }
-    for k in ("kubeconfig", "namespace", "ssh_user", "ssh_host", "ssh_remote_port", "ssh_key"):
+    for k in ("kubeconfig", "cluster", "namespace", "ssh_user", "ssh_host", "ssh_remote_port", "ssh_key"):
         if registry.get(k):
             merged[k] = registry[k]
-    merged.update(registry["pods"][key])
+    entry = registry["pods"][key]
+    # An entry's own cluster or kubeconfig replaces the registry-level target as a whole.
+    if "cluster" in entry or "kubeconfig" in entry:
+        merged.pop("cluster", None)
+        merged.pop("kubeconfig", None)
+    merged.update(entry)
     merged["pod_key"] = key
     merged["ssh_local_port"] = int(merged["ssh_local_port"])
     merged["ssh_remote_port"] = int(merged["ssh_remote_port"])
     merged["ssh_key"] = str(expand_path(merged["ssh_key"]))
     if merged.get("kubeconfig"):
         merged["kubeconfig"] = str(expand_path(merged["kubeconfig"]))
+    elif merged.get("cluster"):
+        merged["kubeconfig"] = rcli_kubeconfig(merged["cluster"])
     return merged
 
 

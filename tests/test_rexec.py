@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -196,6 +197,43 @@ Status: Watching for changes
                 "beta_url": "example-pod:/workspace/baseten/mp/project/trt-llm",
             },
         )
+
+
+class RegistryClusterTests(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.rcli = Path(tmp.name)
+        (self.rcli / "config.yaml").write_text("default_provider: tailscale\n")
+        (self.rcli / "kubeconfig" / "tailscale").mkdir(parents=True)
+        (self.rcli / "kubeconfig" / "tailscale" / "ali-apse8-mpdev-1.yaml").write_text("")
+        patcher = mock.patch.object(REXEC, "RCLI_DIR", self.rcli)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def registry(self, entry: dict, **top: str) -> dict:
+        pod = {"pod": "brendanduke-dev-pod-gb300-0", "ssh_alias": "a", "ssh_local_port": 22243}
+        return {**top, "pods": {"apse8gb0": {**pod, **entry}}}
+
+    def test_cluster_resolves_under_the_rcli_default_provider(self) -> None:
+        cfg = REXEC.resolve_pod_entry(self.registry({"cluster": "ali-apse8-mpdev-1"}), "apse8gb0")
+        self.assertEqual(
+            cfg["kubeconfig"], str(self.rcli / "kubeconfig" / "tailscale" / "ali-apse8-mpdev-1.yaml")
+        )
+
+    def test_entry_cluster_replaces_registry_kubeconfig(self) -> None:
+        registry = self.registry({"cluster": "ali-apse8-mpdev-1"}, kubeconfig="/old/rancher.yaml")
+        cfg = REXEC.resolve_pod_entry(registry, "apse8gb0")
+        self.assertIn("tailscale", cfg["kubeconfig"])
+
+    def test_entry_kubeconfig_replaces_registry_cluster(self) -> None:
+        registry = self.registry({"kubeconfig": "/explicit.yaml"}, cluster="ali-apse8-mpdev-1")
+        cfg = REXEC.resolve_pod_entry(registry, "apse8gb0")
+        self.assertEqual(cfg["kubeconfig"], "/explicit.yaml")
+
+    def test_unsynced_cluster_fails_loud(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "run `rcli sync`"):
+            REXEC.resolve_pod_entry(self.registry({"cluster": "vul-sea-mpdev-1"}), "apse8gb0")
 
 
 if __name__ == "__main__":

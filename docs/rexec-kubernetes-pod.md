@@ -150,22 +150,27 @@ Two files with disjoint concerns (ADR 0002):
 Pod registry:
 
 ```yaml
-default: e7e4
-kubeconfig: ~/.rcli/kubeconfig/vultr-us-sea-prod-1.yaml
-namespace: baseten
+namespace: mp-devenv
 
 pods:
   e7e4:
     pod: brendanduke-dev-pod-b200-0
+    cluster: vul-sea-mpdev-1
     ssh_alias: baseten-dev-pod
     ssh_local_port: 22222
   21ca:
     pod: brendanduke-tp8-dev-pod-b200-0
+    cluster: vul-sea-mpdev-1
     ssh_alias: baseten-tp8-pod
     ssh_local_port: 22223
-    # kubeconfig/namespace/ssh_* may be overridden per entry
-    # (e.g. a pod on a different cluster).
+    # namespace/ssh_* may be overridden per entry.
 ```
+
+`cluster` resolves to `~/.rcli/kubeconfig/<default_provider>/<cluster>.yaml`,
+the file `rcli sync` writes under the `default_provider` in
+`~/.rcli/config.yaml` (for example `tailscale`). An explicit `kubeconfig:` path
+overrides it. `cluster` and `kubeconfig` may also be set at the top level; an
+entry's own `cluster` or `kubeconfig` replaces the top-level target.
 
 Pod keys (`e7e4`, `21ca`) are free-form handles. GPU pod keys may echo
 their node; purpose-specific tooling pods use descriptive keys. Registry loading
