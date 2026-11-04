@@ -2,9 +2,7 @@
 
 Resolve working paths from the active workspace. A model or topic name does not select a checkout or branch.
 
-Run Baseten tests and builds on my GPU dev pod via `rexec`; if the pod is unreachable, say so.
-
-Otherwise, apply cloud-host, devcontainer, and GPU-pod instructions only in that actual execution environment. A
+Apply cloud-host, devcontainer, and GPU-pod instructions only in that actual execution environment. A
 missing executable does not establish the environment or authorize starting a VM or installing a toolchain.
 
 Treat resource names, reservations, paths, and running-job statements from earlier work as historical observations.
@@ -23,12 +21,6 @@ Never access Billip autonomously. Do not call `baseten_billip_*` tools, use or s
 Billip session credentials unless Brendan explicitly approves Billip access for the current task. If Billip could
 unblock an investigation, explain what specific data is needed and ask first; prefer non-Billip APIs or owner-provided
 configuration when available.
-
-## Baseten cluster access
-
-Before concluding that a workload-plane kubeconfig is unavailable, run `rcli sync` and use
-`~/.rcli/kubeconfig/tailscale/<cluster>.yaml`. Verify the required operation with `kubectl auth can-i` before treating
-access as a blocker.
 
 ## Baseten deployment naming
 

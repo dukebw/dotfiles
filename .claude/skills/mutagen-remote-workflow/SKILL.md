@@ -1,6 +1,6 @@
 ---
 name: mutagen-remote-workflow
-description: Provision or connect to GPU dev pods and use the `r`/`rexec` Kubernetes pod workflow with Mutagen sync, SSH over kubectl port-forward, and local-only credentials. Use when the user mentions rexec, r, mutagen, remote builds, remote clangd, GPU dev pods, kubectl exec, or syncing files to a Kubernetes pod.
+description: Connect to dev pods and use the `r`/`rexec` Kubernetes pod workflow with Mutagen sync, SSH over kubectl port-forward, and local-only credentials. Use when the user mentions rexec, r, mutagen, remote builds, dev pods, kubectl exec, or syncing files to a Kubernetes pod.
 ---
 
 # Mutagen Remote Workflow Setup
@@ -9,18 +9,6 @@ Use this skill when working with the dotfiles `r`/`rexec` workflow.
 
 The current workflow targets Kubernetes dev and tooling pods, not Coder workspaces.
 Do not put private SSH keys, GitHub tokens, or kubeconfig files on the pod.
-
-## Related Skills
-
-Before selecting or using GPUs on an MP dev pod, load the
-`gpu-reservation-api` skill. Reserve the required GPUs, set
-`CUDA_VISIBLE_DEVICES` to the reserved indexes, and release the reservation
-when the work finishes. Use `kubernetes-gpu-capacity` as a complementary view
-of Kubernetes allocations; capacity does not replace a dashboard reservation.
-
-Load `dashboard-node-lifecycle` only when adding, retiring, or querying nodes
-in the dev GPU dashboard. Load `dashboard-ui-conventions` only when changing
-the dashboard UI; it is not part of normal dev-pod usage.
 
 ## Architecture
 
@@ -60,16 +48,11 @@ docs/rexec-kubernetes-pod.md
 Read that file before changing the workflow. Keep it updated when changing
 `bin/rexec`, `bin/r`, install behavior, config keys, or security assumptions.
 
-The MP dev-pod lifecycle and storage source of truth is:
-
-```text
-~/work/b10-benchmarks/gpu-dev/runbooks/devenv/README.md
-```
-
-Read the current runbook before creating, moving, scaling, or deleting an MP
-dev pod. It owns cluster names, deployment commands, pod suffixes, storage,
-and recovery. This skill owns the handoff from a running pod to rexec; do not
-copy changing runbook details here.
+MP dev pods are CPU-only workspaces that `intertubin` creates and manages; GPUs
+come from `intertubin gpu start` sessions. The lifecycle source of truth is
+`~/work/baseten/mp/devenv/devpods/chart-template/README.md`. This skill owns
+the handoff from a running pod to rexec. Workspaces are cleaned up frequently,
+so check the pod still exists before using a registry entry.
 
 ## Key Files
 
@@ -78,55 +61,17 @@ copy changing runbook details here.
 | `bin/rexec` | Python CLI for pod setup, Mutagen sync, and remote execution. |
 | `bin/r` | Wrapper that runs `rexec --flush`, streams output, and writes logs locally. |
 | `docs/rexec-kubernetes-pod.md` | Full architecture, setup, security, and troubleshooting docs. |
-| `~/work/b10-benchmarks/gpu-dev/runbooks/devenv/README.md` | Canonical MP dev-pod deployment, storage, and lifecycle runbook. |
-| `kubernetes/remote-clangd-statefulset.yaml` | CPU-only Kubernetes pod for remote CUDA/TRT-LLM clangd. |
 | `~/.config/rexec/pods.yaml` | Global pod registry: pod key → k8s pod name, ssh alias, tunnel port, cluster defaults (ADR 0002). |
 | `.rexec.yaml` at the worktree root | Untracked worktree sync config: `remote_workdir` + `ignore` only, pod-agnostic. |
 | `~/.config/rexec/pod_ed25519` | Local throwaway private key for the pod SSH shim. |
 | `~/.ssh/config` | Managed block with one Host entry per registry pod, derived from the registry. |
 
-## MP Dev Pod Bootstrap
+## MP Dev Pod Handoff
 
-For an MP dev pod, read the current dev-pod runbook first. Then:
+Once `intertubin` has a Running workspace (`intertubin pods --me` lists it):
 
-1. Sync Rancher kubeconfigs and select the requested workload plane cluster:
-
-```bash
-rcli sync --provider rancher
-rcli select --provider rancher
-kubectl config current-context
-```
-
-Verify the selected context matches `CONTEXT` in the chosen cluster
-directory's `Makefile`. Use the `kubernetes-gpu-capacity` skill to inspect the
-cluster before deploying, and coordinate GPU use in the runbook's Slack
-channel. Do not infer availability only from whether a pod is scheduled.
-
-2. Deploy from the cluster directory. Kubernetes and Helm deployments created
-for Brendan must use a short `$USER` containing the exact contiguous segment
-`-debugging-brendanduke`:
-
-```bash
-cd ~/work/b10-benchmarks/gpu-dev/runbooks/<cluster-directory>
-export USER=mp-debugging-brendanduke
-make deploy
-# Optional when the runbook calls for them:
-make deploy NODE=<node-name> MEM=<memory-limit>
-```
-
-Use only the flags documented by the current runbook. After deployment, list
-matching pods rather than guessing the architecture-specific suffix:
-
-```bash
-kubectl -n mp-devenv get pods -o name | grep "$USER-dev-pod-"
-```
-
-Verify every generated pod name contains both `debugging` and `brendanduke`.
-If multiple pods match, select the intended pod explicitly instead of taking
-the first result.
-
-3. Add the selected pod to `~/.config/rexec/pods.yaml` with the selected
-kubeconfig, `namespace: mp-devenv`, a unique alias, and an unused local port:
+1. Add the pod to `~/.config/rexec/pods.yaml` with its cluster's kubeconfig,
+`namespace: mp-devenv`, a unique alias, and an unused local port:
 
 ```yaml
 pods:
@@ -138,7 +83,7 @@ pods:
     ssh_local_port: 22232
 ```
 
-4. For MP dev pods, put the Mutagen replica on node-local storage:
+2. For MP dev pods, put the Mutagen replica on node-local storage:
 
 ```yaml
 remote_workdir: /node-storage/rexec/<worktree-name>
@@ -151,19 +96,17 @@ ignore:
 
 Local files are authoritative, so node-local loss is recoverable and avoids
 JuiceFS small-file latency during syncs and builds. Keep remote-only durable
-state in `/root`, outside the one-way replica. Dedicated tooling pods such as
-remote clangd may still use their manifest-provided `/workspace` volume.
+state in `/root`, outside the one-way replica.
 
-5. Set up the SSH shim, populate the node-local replica, and verify the GPU:
+3. Set up the SSH shim, populate the node-local replica, and verify the pod:
 
 ```bash
 rexec --setup --flush -p apse7
-r -p apse7 nvidia-smi
+r -p apse7 hostname
 ```
 
-If an MP dev-pod node dies, follow the current runbook to recreate the pod and
-its node-storage PVC, then run `rexec --setup --flush -p <key>`. The pod name is
-normally stable; update the registry if it is not. `/root` survives through
+If the workspace is recreated, update its registry entry if the pod name
+changed, then run `rexec --setup --flush -p <key>`. `/root` survives through
 JuiceFS, while rexec safely repopulates an empty `/node-storage` replica from
 the local worktree.
 
@@ -208,12 +151,6 @@ pods:
     pod: brendanduke-dev-pod-b200-0
     ssh_alias: baseten-dev-pod
     ssh_local_port: 22222
-  clangd:
-    pod: remote-clangd-debugging-brendanduke-0
-    kubeconfig: ~/.rcli/kubeconfig/rancher/ali-apse7-mpdev-1.yaml
-    namespace: mp-devenv
-    ssh_alias: baseten-remote-clangd-pod
-    ssh_local_port: 22230
   21ca:
     pod: brendanduke-tp8-dev-pod-b200-0
     ssh_alias: baseten-tp8-pod
@@ -325,15 +262,14 @@ If the pod restarts, run:
 rexec --setup -p <key>
 ```
 
-If the pod moved to a node with a fresh disk (e.g. `b10-gpu move`), Mutagen
+If the pod came back on a node with a fresh disk, Mutagen
 halts the session with `Halted due to one-sided root emptying`; `rexec --setup`,
 `rexec --flush`, and `r` auto-reset it when the local side is populated and the
 remote side is empty. `rexec --setup --flush` blocks until the re-push
 completes. Sessions with an empty *local* side are never auto-reset — inspect
 those with `mutagen sync list <mutagen_session>`.
 
-For an MP dev pod, perform the node-loss recovery steps in the canonical
-dev-pod runbook before rerunning rexec. `/root` is persistent JuiceFS;
+For an MP dev pod, `/root` is persistent JuiceFS;
 `/node-storage` is intentionally disposable and will be repopulated from the
 local worktree.
 
@@ -343,10 +279,8 @@ Update all relevant places together:
 
 - `bin/rexec`
 - `bin/r`
-- `bin/remote-clangd`
 - `install.sh`
 - `README.md`
-- `docs/remote-clangd.md`
 - `docs/rexec-kubernetes-pod.md`
 - `.claude/skills/mutagen-remote-workflow/SKILL.md`
 
@@ -354,12 +288,12 @@ Run at least:
 
 ```bash
 python3 -m py_compile bin/rexec
-bash -n bin/r bin/remote-clangd install.sh
+bash -n bin/r install.sh
 ```
 
 If a pod is available, verify:
 
 ```bash
 rexec --setup
-r nvidia-smi
+r hostname
 ```

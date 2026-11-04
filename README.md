@@ -53,8 +53,6 @@ cd ~/dotfiles && ./install.sh
 - `bin/rlog` - run remote command and mirror logs from `/home/ubuntu/shared/logs`
 - `bin/b10-gpu` - inspect Vultr B200 dev nodes, map GPU owners, and move the configured `rexec` pod
 - `bin/setup-b200-shared-sync` - setup Mutagen one-way sync from remote shared dir
-- `bin/remote-clangd` - stdio bridge to pod-hosted `clangd-18` with per-worktree CMake databases
-- `bin/check-remote-clangd-nvim` - headless verification for remote CUDA diagnostics in Neovim
 - `bin/opencode` - OpenCode 2 shim backed by the versioned local installation
 - `bin/opencode-mcp-remote` - compatibility bridge for older remote MCP servers
 - `bin/opencode-update` - install official OpenCode stable releases and verify server health
@@ -167,14 +165,8 @@ registry default. Tooling can provide both `REXEC_LOCAL_ROOT` and
 `REXEC_WORKDIR` for a config-free one-off invocation. See
 [`docs/rexec-kubernetes-pod.md`](docs/rexec-kubernetes-pod.md) for architecture
 diagrams, setup, security model, config shape, and troubleshooting.
-For MP GPU dev pods, that guide hands pod deployment and lifecycle off to the
-canonical `~/work/b10-benchmarks/gpu-dev/runbooks/devenv/README.md` runbook and
-uses `/node-storage/rexec/<repo>` for the disposable Mutagen replica.
-
-For CUDA editing, Neovim routes matching buffers to `clangd-18` in a dedicated
-CPU-only Kubernetes pod built from the pinned TRT-LLM CUDA image. See
-[`docs/remote-clangd.md`](docs/remote-clangd.md) for flow diagrams, reconnect
-behavior, and headless verification commands.
+For MP dev pods, which `intertubin` creates and manages, that guide uses
+`/node-storage/rexec/<repo>` for the disposable Mutagen replica.
 
 ## Baseten GPU Dev Helpers
 

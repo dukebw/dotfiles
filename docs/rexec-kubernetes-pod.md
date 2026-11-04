@@ -114,37 +114,15 @@ The dev pod must support:
 - root or enough permissions to write `/root/.ssh/authorized_keys`
 - a stable filesystem path for the remote workdir
 
-GPU dev pods satisfy these requirements through the existing runbooks. The
-CPU-only remote clangd pod is defined in
-`kubernetes/remote-clangd-statefulset.yaml`.
+MP dev pods satisfy these requirements.
 
 ## MP Dev Pods
 
-The canonical MP dev-pod deployment, storage, and lifecycle runbook is:
-
-```text
-~/work/b10-benchmarks/gpu-dev/runbooks/devenv/README.md
-```
-
-Read its current cluster-specific instructions before creating, moving,
-scaling, or deleting a pod. In summary, the rexec handoff starts only after the
-runbook has produced a Running pod:
-
-```text
-select the workload plane context -> check GPU capacity -> make deploy
-    -> discover the generated pod name -> register it in rexec -> setup
-```
-
-Use `rcli sync --provider rancher` and `rcli select --provider rancher` when
-the workload plane kubeconfig is not already available, then verify the context
-against the cluster directory's `Makefile`. Check capacity before deployment
-and coordinate GPU use in the Slack channel linked by the runbook.
-
-For deployments created for Brendan, set a short `$USER` containing the exact
-contiguous segment `-debugging-brendanduke`, such as
-`mp-debugging-brendanduke`, and verify every generated pod name contains both
-`debugging` and `brendanduke`. Discover the pod from Kubernetes rather than
-hard-coding its architecture-specific suffix.
+MP dev pods are CPU-only workspaces that `intertubin` creates and manages
+(`intertubin pods create`); GPUs come from `intertubin gpu start` sessions. See
+`~/work/baseten/mp/devenv/devpods/chart-template/README.md`. The rexec handoff
+starts once `intertubin` has produced a Running pod: register it in rexec, then
+run setup. Workspaces are cleaned up frequently, so expect to re-register.
 
 MP dev pods have two storage tiers relevant to rexec:
 
@@ -181,12 +159,6 @@ pods:
     pod: brendanduke-dev-pod-b200-0
     ssh_alias: baseten-dev-pod
     ssh_local_port: 22222
-  clangd:
-    pod: remote-clangd-debugging-brendanduke-0
-    kubeconfig: ~/.rcli/kubeconfig/rancher/ali-apse7-mpdev-1.yaml
-    namespace: mp-devenv
-    ssh_alias: baseten-remote-clangd-pod
-    ssh_local_port: 22230
   21ca:
     pod: brendanduke-tp8-dev-pod-b200-0
     ssh_alias: baseten-tp8-pod
@@ -195,7 +167,7 @@ pods:
     # (e.g. a pod on a different cluster).
 ```
 
-Pod keys (`e7e4`, `clangd`, `21ca`) are free-form handles. GPU pod keys may echo
+Pod keys (`e7e4`, `21ca`) are free-form handles. GPU pod keys may echo
 their node; purpose-specific tooling pods use descriptive keys. Registry loading
 validates unique ports and unique aliases and fails loud on conflicts.
 
@@ -426,8 +398,7 @@ If the pod restarts, run `rexec --setup` again. The private key remains local;
 the pod only gets the public key again.
 
 If the pod came back with a fresh disk (for example after an MP dev-pod node
-move), follow the canonical dev-pod runbook to recreate the pod and
-node-storage PVC. Mutagen then sees the previously populated remote root
+move), Mutagen sees the previously populated remote root
 reappear empty and safety-halts the session
 (`Halted due to one-sided root emptying`).
 `rexec --setup`, `rexec --flush`, and `r` detect this signature — session
