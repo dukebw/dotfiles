@@ -81,13 +81,20 @@ metadata directory.
 Historical numbered patch stacks are converted to `series` order only in temporary
 snapshots, so reviews also work across the manifest migration.
 
-For these PRs, an **Applied SGLang source** pane sits collapsed in the same stack
-as **Full PR diff**. Use `Alt-j` / `Alt-k` to switch between them, then press Enter
-to launch the applied view at its expanded size. The applied view compares the
-reconstructed source trees, including upstream changes when the
-source pin changes. GitHub comments attach to the original PR paths, including
-the patch files. In `gh pr-review`, `S` opens review submission, `Tab` switches
-between review type and body, and `Ctrl-S` submits.
+FlashInfer patch changes add an **Applied FlashInfer source** pane. Each side
+uses the published wheel version asserted in `gpu.sglang.Dockerfile` and replays
+the direct FlashInfer patch commands in Dockerfile order, including the NVFP4
+adapter. Downloads are SHA-256 checked and cached in `~/work/flashinfer-review/`.
+The reconstructed package lives in the review's Git metadata, leaving the PR
+worktree clean. Docker builds and install scripts are never executed.
+
+Applied-source panes sit collapsed in the same stack as **Full PR diff**; a PR
+can have both SGLang and FlashInfer views. Use `Alt-j` / `Alt-k` to switch, then
+press Enter to launch the applied view at its expanded size. These views compare
+the reconstructed source trees, including upstream changes when a pin changes.
+GitHub comments attach to the original PR paths, including the patch files. In
+`gh pr-review`, `S` opens review submission, `Tab` switches between review type
+and body, and `Ctrl-S` submits.
 
 Requirements: `gh`, the `yukikotani231/gh-pr-review` extension, Python 3.12+,
 Zellij, and Neovim with Diffview. Use `review-pr 28978 --prepare-only` to prepare

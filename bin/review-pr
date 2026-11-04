@@ -4,6 +4,7 @@
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -11,15 +12,23 @@ from pathlib import Path
 import re
 import runpy
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+import urllib.request
+import zipfile
 
 
 PROJECT = Path("mp/baseten_dynamo/cache_aware_routing_trtllm")
 STACK_PATHS = (PROJECT / "docker/sglang/patches", PROJECT / "versions/sglang.env")
+FLASHINFER_PATHS = (
+    PROJECT / "docker/flashinfer",
+    PROJECT / "docker/flashinfer_nvfp4_adapter.patch",
+    PROJECT / "docker/gpu.sglang.Dockerfile",
+)
 BASE_REF = "refs/pr-review/base"
 HEAD_REF = "refs/pr-review/head"
 REVIEW_MODEL = "openai/gpt-6-astra#xhigh"
@@ -39,11 +48,11 @@ def run(*args, cwd=None, env=None):
             f"{shlex.join(str(arg) for arg in args)} failed:\n"
             f"{result.stdout}{result.stderr}"
         )
-    return result.stdout.strip()
+    return result.stdout
 
 
 def git(directory, *args):
-    return run("git", "-C", directory, *args)
+    return run("git", "-C", directory, *args).strip()
 
 
 @contextlib.contextmanager
@@ -225,6 +234,34 @@ def normalize_legacy_stack(directory):
     (directory / "series").write_text("".join(f"{name}\n" for name in names))
 
 
+def publish_source(base_source, head_source, source):
+    source_head = git(head_source, "rev-parse", "HEAD")
+    git(
+        head_source,
+        "fetch",
+        "--no-tags",
+        "--update-shallow",
+        base_source,
+        f"HEAD:{BASE_REF}",
+    )
+    git(head_source, "update-ref", HEAD_REF, source_head)
+    if source.exists():
+        git(
+            source,
+            "fetch",
+            "--no-tags",
+            "--update-shallow",
+            head_source,
+            f"+{BASE_REF}:{BASE_REF}",
+            f"+{HEAD_REF}:{HEAD_REF}",
+        )
+    else:
+        source.parent.mkdir(parents=True, exist_ok=True)
+        head_source.rename(source)
+    git(source, "checkout", "--detach", HEAD_REF)
+    return source_head
+
+
 def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache):
     source = worktree / PROJECT / "sglang"
     if source.exists():
@@ -243,7 +280,9 @@ def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache)
             scratch = Path(temporary)
             before, old_pin = snapshot(checkout, baseline, scratch / "base")
             after, new_pin = snapshot(checkout, head, scratch / "head")
-            validate_patches = runpy.run_path(str(helper.parent / "patch_stack.py"))["patches"]
+            validate_patches = runpy.run_path(str(helper.parent / "patch_stack.py"))[
+                "patches"
+            ]
             for label, project in (("Baseline", before), ("Proposed", after)):
                 try:
                     directory = project / "docker/sglang/patches"
@@ -259,31 +298,185 @@ def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache)
             base_source, head_source = scratch / "base-source", scratch / "head-source"
             init_source(helper, before, base_source, cache)
             init_source(helper, after, head_source, cache)
-            source_head = git(head_source, "rev-parse", "HEAD")
-            git(
-                head_source,
-                "fetch",
-                "--no-tags",
-                "--update-shallow",
-                base_source,
-                f"HEAD:{BASE_REF}",
-            )
-            git(head_source, "update-ref", HEAD_REF, source_head)
-            if source.exists():
-                git(
-                    source,
-                    "fetch",
-                    "--no-tags",
-                    "--update-shallow",
-                    head_source,
-                    f"+{BASE_REF}:{BASE_REF}",
-                    f"+{HEAD_REF}:{HEAD_REF}",
-                )
-            else:
-                source.parent.mkdir(parents=True, exist_ok=True)
-                head_source.rename(source)
-            git(source, "checkout", "--detach", HEAD_REF)
+            source_head = publish_source(base_source, head_source, source)
             state.update(source_head=source_head, source_revisions=[baseline, head])
+            save_state(state_path, state)
+    return source
+
+
+def flashinfer_stack(checkout, revision):
+    dockerfile = git(
+        checkout, "show", f"{revision}:{PROJECT}/docker/gpu.sglang.Dockerfile"
+    )
+    versions = set(
+        re.findall(r"""flashinfer\.__version__\s*==\s*["']([\w.+-]+)["']""", dockerfile)
+    )
+    if len(versions) != 1:
+        raise RuntimeError(
+            f"Expected one FlashInfer version assertion in {revision}:gpu.sglang.Dockerfile"
+        )
+    copied = {}
+    applied = set()
+    patches = []
+    for line in dockerfile.replace("\\\n", " ").splitlines():
+        if line.startswith("COPY "):
+            words = shlex.split(line)
+            if len(words) == 3 and words[1].endswith(".patch"):
+                path = Path(words[1])
+                if str(path).startswith("docker/flashinfer"):
+                    if ".." in path.parts or path.is_absolute():
+                        raise RuntimeError(f"Invalid FlashInfer patch path: {path}")
+                    target = words[2]
+                    if target.endswith("/"):
+                        target += path.name
+                    copied[target] = path
+        elif line.startswith("RUN "):
+            lexer = shlex.shlex(line[4:], posix=True, punctuation_chars=";&|")
+            lexer.whitespace_split = True
+            pending = []
+            for word in [*lexer, ";"]:
+                if word not in (";", "&&", "||", "|", "&"):
+                    pending.append(word)
+                    continue
+                words, pending = pending, []
+                if words[:1] != ["patch"]:
+                    continue
+                if not any("flashinfer_dir" in word for word in words):
+                    continue
+                inputs = [
+                    word.removeprefix("--input=")
+                    for word in words
+                    if word.startswith("--input=")
+                ]
+                required = {"--forward", "--batch", "--fuzz=0", "-p1"}
+                if (
+                    not required.issubset(words)
+                    or "-d" not in words
+                    or words[words.index("-d") + 1 : words.index("-d") + 2]
+                    != ["$flashinfer_dir"]
+                    or len(inputs) != 1
+                    or inputs[0] not in copied
+                ):
+                    raise RuntimeError(
+                        f"Unsupported FlashInfer patch command: {shlex.join(words)}"
+                    )
+                path = copied[inputs[0]]
+                text = run(
+                    "git", "-C", checkout, "show", f"{revision}:{PROJECT / path}"
+                )
+                patches.append((path.name, text))
+                applied.add(path)
+    if unused := set(copied.values()) - applied:
+        raise RuntimeError(
+            "FlashInfer patches lack a supported application command: "
+            + ", ".join(str(path) for path in sorted(unused))
+        )
+    return versions.pop(), patches
+
+
+def flashinfer_wheel(version, cache):
+    with urllib.request.urlopen(
+        f"https://pypi.org/pypi/flashinfer-python/{version}/json", timeout=60
+    ) as response:
+        metadata = json.load(response)
+    wheels = [
+        item
+        for item in metadata["urls"]
+        if item["filename"].endswith("-py3-none-any.whl")
+    ]
+    if len(wheels) != 1:
+        raise RuntimeError(
+            f"Expected one platform-independent FlashInfer {version} wheel"
+        )
+    artifact = wheels[0]
+    filename = artifact["filename"]
+    if Path(filename).name != filename:
+        raise RuntimeError(f"Invalid FlashInfer wheel filename: {filename}")
+    cache.mkdir(parents=True, exist_ok=True)
+    wheel = cache / filename
+    if not wheel.exists():
+        with step(f"Downloading FlashInfer {version} source wheel"):
+            with tempfile.TemporaryDirectory(
+                prefix="download-", dir=cache
+            ) as temporary:
+                download = Path(temporary) / filename
+                with urllib.request.urlopen(artifact["url"], timeout=60) as response:
+                    with download.open("wb") as output:
+                        shutil.copyfileobj(response, output)
+                with download.open("rb") as contents:
+                    digest = hashlib.file_digest(contents, "sha256").hexdigest()
+                if digest != artifact["digests"]["sha256"]:
+                    raise RuntimeError(f"FlashInfer {version} wheel checksum mismatch")
+                download.replace(wheel)
+    with wheel.open("rb") as contents:
+        if (
+            hashlib.file_digest(contents, "sha256").hexdigest()
+            != artifact["digests"]["sha256"]
+        ):
+            raise RuntimeError(
+                f"Cached FlashInfer {version} wheel checksum mismatch: {wheel}"
+            )
+    return wheel
+
+
+def init_flashinfer(wheel, version, patches, source):
+    source.mkdir()
+    with zipfile.ZipFile(wheel) as contents:
+        for member in contents.infolist():
+            if not member.filename.startswith("flashinfer/") or member.is_dir():
+                continue
+            relative = Path(member.filename).relative_to("flashinfer")
+            if any(part.lower() in ("..", ".git") for part in relative.parts):
+                raise RuntimeError(f"Invalid FlashInfer wheel path: {member.filename}")
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with contents.open(member) as incoming, path.open("wb") as output:
+                shutil.copyfileobj(incoming, output)
+    if not any(source.iterdir()):
+        raise RuntimeError(f"FlashInfer {version} wheel contains no flashinfer package")
+    run("git", "init", "--template=", source)
+    for key, value in (
+        ("user.name", "PR review"),
+        ("user.email", "pr-review@localhost"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", "/dev/null"),
+    ):
+        git(source, "config", key, value)
+    git(source, "add", "--all", "--force")
+    git(source, "commit", "-m", f"FlashInfer {version}")
+    for name, text in patches:
+        patch = source.parent / name
+        patch.write_text(text)
+        git(source, "apply", "--index", patch)
+        git(source, "commit", "-m", name)
+
+
+def prepare_flashinfer(baseline, head, state_path, state, stacks, cache):
+    source = state_path.parent / "flashinfer"
+    if source.exists():
+        if "flashinfer_head" not in state:
+            raise RuntimeError(
+                f"{source} already exists and was not created by review-pr"
+            )
+        require_clean(source, state["flashinfer_head"])
+        if state.get("flashinfer_revisions") == [baseline, head]:
+            return source
+    with step("Applying baseline and proposed FlashInfer stacks"):
+        with tempfile.TemporaryDirectory(
+            prefix="flashinfer-", dir=state_path.parent
+        ) as temporary:
+            scratch = Path(temporary)
+            trees = []
+            for label, (version, patches) in zip(("base", "head"), stacks, strict=True):
+                tree = scratch / label
+                init_flashinfer(
+                    flashinfer_wheel(version, cache), version, patches, tree
+                )
+                trees.append(tree)
+            source_head = publish_source(*trees, source)
+            state.update(
+                flashinfer_head=source_head, flashinfer_revisions=[baseline, head]
+            )
             save_state(state_path, state)
     return source
 
@@ -335,6 +528,7 @@ def prepare(repo, number, work):
         "--",
         *STACK_PATHS,
     )
+    sources = []
     if changed_stack:
         source = prepare_sglang(
             checkout,
@@ -345,12 +539,21 @@ def prepare(repo, number, work):
             state,
             work / "sglang-review.git",
         )
-    else:
-        source = worktree
+        sources.append(("SGLang", source))
+    if repo == "basetenlabs/baseten" and git(
+        checkout, "diff", "--name-only", baseline, head, "--", *FLASHINFER_PATHS
+    ):
+        stacks = [flashinfer_stack(checkout, revision) for revision in (baseline, head)]
+        if stacks[0] != stacks[1]:
+            source = prepare_flashinfer(
+                baseline, head, state_path, state, stacks, work / "flashinfer-review"
+            )
+            sources.append(("FlashInfer", source))
     diff_range = f"{baseline}..{head}"
     print(f"Review workspace: {worktree}", flush=True)
-    print(f"Source view: {source}", flush=True)
-    return worktree, source, diff_range, state_path.parent
+    for label, source in sources:
+        print(f"Applied {label} source: {source}", flush=True)
+    return worktree, sources, diff_range, state_path.parent
 
 
 def review_tab(name, panes, *, focus=False):
@@ -367,21 +570,21 @@ def review_tab(name, panes, *, focus=False):
 """
 
 
-def layout(repo, number, worktree, source, diff_range, *, include_agent=False):
+def layout(repo, number, worktree, sources, diff_range, *, include_agent=False):
     quote = json.dumps
-    expanded = " expanded=true" if source != worktree else ""
+    expanded = " expanded=true" if sources else ""
     diffs = f"""pane name="Full PR diff" command="nvim" close_on_exit=true focus=true{expanded} {{
         cwd {quote(str(worktree))}
         args "-c" {quote(f"DiffviewOpen {diff_range}")}
     }}"""
-    if source != worktree:
-        diffs = f"""pane stacked=true {{
-            {diffs}
-            pane name="Applied SGLang source" command="nvim" close_on_exit=true start_suspended=true {{
+    if sources:
+        for label, source in sources:
+            diffs += f"""
+            pane name="Applied {label} source" command="nvim" close_on_exit=true start_suspended=true {{
                 cwd {quote(str(source))}
                 args "-c" {quote(f"DiffviewOpen {BASE_REF}..{HEAD_REF}")}
-            }}
-        }}"""
+            }}"""
+        diffs = f"pane stacked=true {{\n{diffs}\n}}"
     panes = f'''pane split_direction="vertical" {{
         pane name="GitHub review #{number}" command="gh" close_on_exit=true {{
             cwd {quote(str(worktree))}
@@ -428,11 +631,11 @@ def main():
     work.mkdir(exist_ok=True)
     with (work / ".pr-review.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        worktree, source, diff_range, metadata = prepare(args.repo, args.number, work)
+        worktree, sources, diff_range, metadata = prepare(args.repo, args.number, work)
     view = metadata / ("agent.kdl" if args.ai else "layout.kdl")
     view.write_text(
         layout(
-            args.repo, args.number, worktree, source, diff_range, include_agent=args.ai
+            args.repo, args.number, worktree, sources, diff_range, include_agent=args.ai
         )
     )
     if args.prepare_only:

@@ -1,5 +1,7 @@
 import importlib.machinery
 import importlib.util
+import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -7,6 +9,7 @@ import shutil
 import tempfile
 import unittest
 from unittest import mock
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -190,17 +193,18 @@ class ReviewPRTests(unittest.TestCase):
             return execute(*args, **kwargs)
 
         with mock.patch.object(review, "run", side_effect=local_github):
-            worktree, source, diff_range, _ = review.prepare(
+            worktree, sources, diff_range, _ = review.prepare(
                 "basetenlabs/baseten", 1, self.root
             )
-            self.assertEqual((worktree, source), (self.worktree, self.worktree))
+            self.assertEqual(worktree, self.worktree)
+            self.assertEqual(sources, [])
             self.assertEqual(diff_range, f"{baseline}..{head}")
             self.assertEqual(review.git(self.checkout, "rev-parse", "HEAD"), base_tip)
             self.assertEqual(
                 review.git(worktree, "diff", "--name-only", diff_range), "file"
             )
             layout = review.layout(
-                "basetenlabs/baseten", 1, worktree, source, diff_range
+                "basetenlabs/baseten", 1, worktree, sources, diff_range
             )
             self.assertIn('pane name="Full PR diff"', layout)
             self.assertNotIn("stacked=true", layout)
@@ -217,13 +221,16 @@ class ReviewPRTests(unittest.TestCase):
             self.assertEqual(review.git(self.checkout, "rev-parse", "HEAD"), base_tip)
 
     def test_mixed_pr_defaults_to_full_diff_with_applied_source_companion(self):
-        baseline = review.git(self.checkout, "rev-parse", "HEAD")
         dockerfile = review.PROJECT / "docker/gpu.sglang.Dockerfile"
+        (self.checkout / dockerfile).parent.mkdir(parents=True)
+        dockerfile_text = "RUN python3 -c 'import flashinfer; assert flashinfer.__version__ == \"0.7.2\"'\n"
+        (self.checkout / dockerfile).write_text(dockerfile_text)
+        baseline = self.commit(self.checkout)
         patchfile = review.STACK_PATHS[0] / "001_fixture.patch"
         (self.checkout / patchfile).parent.mkdir(parents=True)
         (self.checkout / patchfile).write_text("fixture patch\n")
         (self.checkout / dockerfile).write_text(
-            "RUN pip install flashinfer-python==0.6.18\n"
+            dockerfile_text + "ENV SGLANG_CPU_WORKERS=4\n"
         )
         head = self.commit(self.checkout)
         review.git(self.checkout, "update-ref", "refs/pull/1/head", head)
@@ -244,11 +251,16 @@ class ReviewPRTests(unittest.TestCase):
         with (
             mock.patch.object(review, "run", side_effect=local_github),
             mock.patch.object(review, "prepare_sglang", return_value=source),
+            mock.patch.object(
+                review,
+                "prepare_flashinfer",
+                side_effect=AssertionError("Unexpected FlashInfer replay"),
+            ),
         ):
             worktree, applied_source, diff_range, _ = review.prepare(
                 "basetenlabs/baseten", 1, self.root
             )
-        self.assertEqual(applied_source, source)
+        self.assertEqual(applied_source, [("SGLang", source)])
         self.assertEqual(diff_range, f"{baseline}..{head}")
         self.assertEqual(
             review.git(worktree, "diff", "--name-only", diff_range).splitlines(),
@@ -271,13 +283,242 @@ class ReviewPRTests(unittest.TestCase):
             "basetenlabs/baseten",
             1,
             worktree,
-            applied_source,
+            [*applied_source, ("FlashInfer", self.root / "flashinfer")],
             diff_range,
             include_agent=True,
         )
         self.assertIn('pane name="Full PR diff"', combined)
         self.assertIn('pane name="Applied SGLang source"', combined)
+        self.assertIn('pane name="Applied FlashInfer source"', combined)
         self.assertIn('pane name="OpenCode review"', combined)
+
+    def flashinfer_dockerfile(self, version, *patches):
+        text = f"RUN python3 -c 'import flashinfer; assert flashinfer.__version__ == \"{version}\"'\n"
+        for name in patches:
+            text += (
+                f"COPY docker/flashinfer/{name} /tmp/\n"
+                "RUN flashinfer_dir=\"$(python3 -c 'import flashinfer')\" && \\\n"
+                f'    patch --forward --batch --fuzz=0 -d "$flashinfer_dir" -p1 --input=/tmp/{name} && \\\n'
+                f"    rm /tmp/{name}\n"
+            )
+        return text
+
+    def test_flashinfer_patch_comparison_order_pin_change_refresh_and_local_edits(self):
+        project = self.checkout / review.PROJECT
+        patches = project / "docker/flashinfer"
+        patches.mkdir(parents=True)
+        dockerfile = project / "docker/gpu.sglang.Dockerfile"
+        first, second = "z_fixture.patch", "a_fixture.patch"
+        patch = "Title: Review fixture\n\n--- a/kernel.py\n+++ b/kernel.py\n@@ -1 +1 @@\n-value = {before}\n+value = {after}\n"
+        (patches / first).write_text(patch.format(before=0, after=1))
+        dockerfile.write_text(self.flashinfer_dockerfile("0.7.2", first))
+        baseline = self.commit(self.checkout)
+        (patches / first).write_text(patch.format(before=0, after=2))
+        (patches / second).write_text(patch.format(before=2, after=3))
+        dockerfile.write_text(self.flashinfer_dockerfile("0.7.3", first, second))
+        head = self.commit(self.checkout)
+        review.git(self.checkout, "update-ref", "refs/pull/1/head", head)
+        wheels = {}
+        for version in ("0.7.2", "0.7.3"):
+            wheel = self.root / f"flashinfer_python-{version}-py3-none-any.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("flashinfer/kernel.py", "value = 0\n")
+                if version == "0.7.3":
+                    archive.writestr(
+                        "flashinfer/upstream_only.py", "new_release = True\n"
+                    )
+            wheels[version] = wheel
+        execute = review.run
+        pr = {"headRefOid": head, "baseRefOid": baseline}
+
+        def local_github(*args, **kwargs):
+            if args[:3] == ("gh", "pr", "view"):
+                return json.dumps(pr)
+            args = tuple(
+                str(self.checkout)
+                if arg == "https://github.com/basetenlabs/baseten.git"
+                else arg
+                for arg in args
+            )
+            return execute(*args, **kwargs)
+
+        with (
+            mock.patch.object(review, "run", side_effect=local_github),
+            mock.patch.object(
+                review,
+                "flashinfer_wheel",
+                side_effect=lambda version, cache: wheels[version],
+            ),
+        ):
+            worktree, sources, diff_range, metadata = review.prepare(
+                "basetenlabs/baseten", 1, self.root
+            )
+            source = metadata / "flashinfer"
+            self.assertEqual(sources, [("FlashInfer", source)])
+            self.assertEqual(
+                review.git(source, "show", f"{review.BASE_REF}:kernel.py"), "value = 1"
+            )
+            self.assertEqual(
+                review.git(source, "show", f"{review.HEAD_REF}:kernel.py"), "value = 3"
+            )
+            self.assertEqual(
+                review.git(
+                    source, "diff", "--name-only", review.BASE_REF, review.HEAD_REF
+                ).splitlines(),
+                ["kernel.py", "upstream_only.py"],
+            )
+            self.assertEqual(review.git(worktree, "status", "--porcelain"), "")
+            layout = review.layout(
+                "basetenlabs/baseten",
+                1,
+                worktree,
+                sources,
+                diff_range,
+                include_agent=True,
+            )
+            self.assertIn('pane name="Applied FlashInfer source"', layout)
+            self.assertNotIn("Applied SGLang source", layout)
+            self.assertIn('tab name="AI review 1"', layout)
+            with mock.patch.object(
+                review,
+                "init_flashinfer",
+                side_effect=AssertionError("Unexpected replay"),
+            ):
+                self.assertEqual(
+                    review.prepare("basetenlabs/baseten", 1, self.root)[1], sources
+                )
+            (patches / second).write_text(patch.format(before=2, after=4))
+            pr["headRefOid"] = self.commit(self.checkout)
+            review.git(
+                self.checkout, "update-ref", "refs/pull/1/head", pr["headRefOid"]
+            )
+            review.prepare("basetenlabs/baseten", 1, self.root)
+            self.assertEqual(
+                review.git(source, "show", f"{review.HEAD_REF}:kernel.py"), "value = 4"
+            )
+            (patches / second).write_text(patch.format(before=99, after=5))
+            pr["headRefOid"] = self.commit(self.checkout)
+            review.git(
+                self.checkout, "update-ref", "refs/pull/1/head", pr["headRefOid"]
+            )
+            with self.assertRaisesRegex(RuntimeError, "git .*apply"):
+                review.prepare("basetenlabs/baseten", 1, self.root)
+            self.assertEqual(
+                review.git(source, "show", f"{review.HEAD_REF}:kernel.py"), "value = 4"
+            )
+            (source / "kernel.py").write_text("local edit\n")
+            with self.assertRaisesRegex(RuntimeError, "Preserve local changes"):
+                review.prepare("basetenlabs/baseten", 1, self.root)
+            self.assertEqual((source / "kernel.py").read_text(), "local edit\n")
+
+    def test_flashinfer_stack_rejects_ambiguous_version_and_unknown_patch_input(self):
+        dockerfile = self.checkout / review.PROJECT / "docker/gpu.sglang.Dockerfile"
+        dockerfile.parent.mkdir(parents=True)
+        for text, error in (
+            (
+                self.flashinfer_dockerfile("0.7.2")
+                + self.flashinfer_dockerfile("0.7.3"),
+                "one FlashInfer version",
+            ),
+            (
+                self.flashinfer_dockerfile("0.7.2", "fixture.patch").replace(
+                    "COPY ", "# COPY "
+                ),
+                "Unsupported FlashInfer patch command",
+            ),
+            (
+                self.flashinfer_dockerfile("0.7.2", "fixture.patch").replace(
+                    "patch --forward", "unknown-patch --forward"
+                ),
+                "lack a supported application command",
+            ),
+        ):
+            with self.subTest(error=error):
+                dockerfile.write_text(text)
+                head = self.commit(self.checkout)
+                with self.assertRaisesRegex(RuntimeError, error):
+                    review.flashinfer_stack(self.checkout, head)
+
+    def test_flashinfer_stack_preserves_patch_text_and_follows_semicolon_run_order(
+        self,
+    ):
+        project = self.checkout / review.PROJECT
+        (project / "docker/flashinfer").mkdir(parents=True)
+        adapter = "adapter diff\n \n"
+        kernel = "kernel diff\n\n"
+        (project / "docker/flashinfer_nvfp4_adapter.patch").write_text(adapter)
+        (project / "docker/flashinfer/kernel.patch").write_text(kernel)
+        dockerfile = self.flashinfer_dockerfile("0.7.2") + (
+            "COPY docker/flashinfer/kernel.patch /tmp/\n"
+            "COPY docker/flashinfer_nvfp4_adapter.patch /tmp/\n"
+            'RUN set -eu; flashinfer_dir="/installed/flashinfer"; \\\n'
+            '    patch --forward --batch --fuzz=0 -d "$flashinfer_dir" -p1 --input=/tmp/flashinfer_nvfp4_adapter.patch; \\\n'
+            '    patch --forward --batch --fuzz=0 -d "$flashinfer_dir" -p1 --input=/tmp/kernel.patch\n'
+        )
+        (project / "docker/gpu.sglang.Dockerfile").write_text(dockerfile)
+        head = self.commit(self.checkout)
+        self.assertEqual(
+            review.flashinfer_stack(self.checkout, head),
+            (
+                "0.7.2",
+                [("flashinfer_nvfp4_adapter.patch", adapter), ("kernel.patch", kernel)],
+            ),
+        )
+
+    def test_flashinfer_wheel_download_cache_and_integrity(self):
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("flashinfer/kernel.py", "value = 0\n")
+        wheel_bytes = payload.getvalue()
+        artifact = {
+            "filename": "flashinfer_python-0.7.2-py3-none-any.whl",
+            "url": "https://files.pythonhosted.org/fixture.whl",
+            "digests": {"sha256": hashlib.sha256(wheel_bytes).hexdigest()},
+        }
+        requests = []
+
+        def download(url, **kwargs):
+            requests.append(url)
+            return io.BytesIO(
+                json.dumps({"urls": [artifact]}).encode()
+                if url.endswith("/json")
+                else wheel_bytes
+            )
+
+        with mock.patch.object(review.urllib.request, "urlopen", side_effect=download):
+            wheel = review.flashinfer_wheel("0.7.2", self.root / "wheels")
+            self.assertEqual(wheel.read_bytes(), wheel_bytes)
+            self.assertEqual(
+                review.flashinfer_wheel("0.7.2", self.root / "wheels"), wheel
+            )
+            self.assertEqual(requests.count(artifact["url"]), 1)
+            wheel.write_bytes(b"corrupt")
+            with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                review.flashinfer_wheel("0.7.2", self.root / "wheels")
+            artifact["digests"]["sha256"] = "0" * 64
+            with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                review.flashinfer_wheel("0.7.2", self.root / "bad-wheels")
+            self.assertFalse((self.root / "bad-wheels" / artifact["filename"]).exists())
+
+    def test_flashinfer_wheel_rejects_escaping_and_git_metadata_paths(self):
+        for index, name in enumerate(
+            (
+                "flashinfer/../outside",
+                "flashinfer/.git/config",
+                "flashinfer/.GiT/config",
+            )
+        ):
+            with self.subTest(name=name):
+                wheel = self.root / "unsafe.whl"
+                with zipfile.ZipFile(wheel, "w") as archive:
+                    archive.writestr(name, "unsafe\n")
+                with self.assertRaisesRegex(
+                    RuntimeError, "Invalid FlashInfer wheel path"
+                ):
+                    review.init_flashinfer(
+                        wheel, "0.7.2", [], self.root / f"source-{index}"
+                    )
+                self.assertFalse((self.root / "outside").is_file())
 
     @unittest.skipUnless(
         HELPER.exists(), "Requires the Baseten SGLang development helper"
@@ -314,6 +555,9 @@ class ReviewPRTests(unittest.TestCase):
         project = self.checkout / review.PROJECT
         (project / "bin").mkdir(parents=True)
         shutil.copyfile(HELPER, project / "bin/sglang_dev.py")
+        shutil.copyfile(
+            HELPER.parent / "patch_stack.py", project / "bin/patch_stack.py"
+        )
         (project / "versions").mkdir()
         version = project / "versions/sglang.env"
         version.write_text("ENGINE_SHA=v1.0.0\n")
