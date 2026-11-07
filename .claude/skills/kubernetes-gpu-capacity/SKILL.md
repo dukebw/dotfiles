@@ -31,9 +31,9 @@ kubectl --context "$CONTEXT" auth can-i list nodes
 kubectl --context "$CONTEXT" auth can-i list pods --all-namespaces
 ```
 
-If the workload-plane context is missing, run `rcli sync --provider rancher`
-and select it with `rcli select --provider rancher`. Do not conclude that access
-is unavailable before trying that workflow.
+If the workload-plane context is missing, use the rcli Tailscale kubeconfig
+(see "Kubernetes cluster access" in AGENTS.md). Do not conclude that access is
+unavailable before trying it.
 
 ## Inputs
 

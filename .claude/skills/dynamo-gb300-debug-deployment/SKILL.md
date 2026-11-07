@@ -35,8 +35,8 @@ deployment for production, as described below.
 
 - Pass `--context "$CONTEXT"` on every `kubectl` command. Pass
   `--kube-context "$CONTEXT"` on every Helm command.
-- Run `rcli sync --provider rancher` and `rcli select --provider rancher` before
-  concluding that cluster access is unavailable.
+- Use the rcli Tailscale kubeconfig (see "Kubernetes cluster access" in
+  AGENTS.md) before concluding that cluster access is unavailable.
 - Verify RBAC with `kubectl auth can-i` before modifying resources.
 - Never infer GPU capacity from pod counts or remembered node names.
 - Never delete another user's workload or release to obtain capacity.

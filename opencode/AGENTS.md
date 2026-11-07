@@ -22,6 +22,14 @@ Billip session credentials unless Brendan explicitly approves Billip access for 
 unblock an investigation, explain what specific data is needed and ask first; prefer non-Billip APIs or owner-provided
 configuration when available.
 
+## Kubernetes cluster access
+
+Reach clusters through the rcli Tailscale provider, not Rancher. Agents cannot run `rcli sync` (it refuses inside agent
+sessions), but its kubeconfigs are already on disk: list clusters with `rcli list -p tailscale`, then pass
+`--kubeconfig ~/.rcli/kubeconfig/tailscale/<cluster>.yaml --context <cluster>` on every `kubectl` command (Helm takes
+`--kube-context`). Don't use `rcli select --kubectl`; it switches my current context, which the dev-pod tooling
+reads. If a cluster is missing from the inventory, ask me to run `rcli sync -p tailscale` in my terminal.
+
 ## Baseten deployment naming
 
 Every Kubernetes or Helm deployment created for Brendan on a Baseten cluster must use a short base name containing the
