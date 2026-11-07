@@ -25,10 +25,12 @@ configuration when available.
 ## Kubernetes cluster access
 
 Reach clusters through the rcli Tailscale provider, not Rancher. Agents cannot run `rcli sync` (it refuses inside agent
-sessions), but its kubeconfigs are already on disk: list clusters with `rcli list -p tailscale`, then pass
-`--kubeconfig ~/.rcli/kubeconfig/tailscale/<cluster>.yaml --context <cluster>` on every `kubectl` command (Helm takes
-`--kube-context`). Don't use `rcli select --kubectl`; it switches my current context, which the dev-pod tooling
-reads. If a cluster is missing from the inventory, ask me to run `rcli sync -p tailscale` in my terminal.
+sessions), but its kubeconfigs are already on disk: list clusters with `rcli list -p tailscale`. Read with
+`--kubeconfig ~/.rcli/kubeconfig/tailscale-readonly/<cluster>.yaml`, whose production contexts are named
+`<cluster>-readonly`; use `--kubeconfig ~/.rcli/kubeconfig/tailscale/<cluster>.yaml --context <cluster>` only when the
+task writes. Pass the kubeconfig and context on every `kubectl` command (Helm takes `--kube-context`). Don't use
+`rcli select --kubectl`; it switches my current context, which the dev-pod tooling reads. If a cluster is missing from
+the inventory, ask me to run `rcli sync -p tailscale` in my terminal.
 
 ## Baseten deployment naming
 
