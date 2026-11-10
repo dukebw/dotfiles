@@ -1,0 +1,15 @@
+#!/bin/sh
+# Baseten API keys have no trufflehog detector, so the global hook misses them.
+baseten_key='(^|[^A-Za-z0-9])(b10_)?[A-Za-z0-9]{8}\.[A-Za-z0-9]{32}([^A-Za-z0-9]|$)'
+
+leaks=$(git grep --cached -I -l -E "$baseten_key")
+if [ -n "$leaks" ]; then
+  printf >&2 'pre-commit: these staged files contain what looks like a Baseten API key:\n%s\n' "$leaks"
+  exit 1
+fi
+
+# This repo's core.hooksPath replaces the global one, so run the global hook too.
+global_hooks=$(git config --global --type=path --get core.hooksPath)
+if [ -n "$global_hooks" ] && [ -x "$global_hooks/pre-commit" ]; then
+  exec "$global_hooks/pre-commit" "$@"
+fi
