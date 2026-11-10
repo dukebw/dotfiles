@@ -39,7 +39,7 @@ cd ~/dotfiles && ./install.sh
 - `zsh/.zshrc` - shell configuration
 - `git/.gitconfig` - git with delta integration
 - `zellij/config.kdl` - zellij terminal multiplexer
-- `opencode/opencode.json` - OpenCode config
+- `opencode/opencode.json` - OpenCode config (`~/.config/opencode/opencode.jsonc` is written by `baseten grid setup`, holds an API key, and is not tracked)
 - `opencode/commands/` - global OpenCode slash commands
 - `.claude/skills/opencode-remote/SKILL.md` - private remote OpenCode runbook
 - `launchd/ai.opencode.web.plist` - OpenCode 2 managed-service availability monitor
