@@ -31,14 +31,16 @@ FLASHINFER_PATHS = (
 )
 BASE_REF = "refs/pr-review/base"
 HEAD_REF = "refs/pr-review/head"
+APPLIED_REFS = "refs/applied/"
 REVIEW_MODEL = "openai/gpt-6-astra#xhigh"
 
 
-def run(*args, cwd=None, env=None):
+def run(*args, cwd=None, env=None, input=None):
     result = subprocess.run(
         [str(arg) for arg in args],
         cwd=cwd,
         env=env,
+        input=input,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -51,8 +53,8 @@ def run(*args, cwd=None, env=None):
     return result.stdout
 
 
-def git(directory, *args):
-    return run("git", "-C", directory, *args).strip()
+def git(directory, *args, input=None):
+    return run("git", "-C", directory, *args, input=input).strip()
 
 
 @contextlib.contextmanager
@@ -170,7 +172,23 @@ def cache_pin(cache, pin):
                 git(cache, "update-ref", f"refs/tags/{pin}", commit)
 
 
-def init_source(helper, project, source, cache):
+def init_source(helper, project, source, cache, pin, patches):
+    # Each ref names the source after one patch: the pinned commit and every patch so
+    # far. A replay starts from the longest run of leading patches applied before.
+    base = git(cache, "rev-parse", "--verify", f"{pin}^{{commit}}")
+    digest, refs = hashlib.sha256(base.encode()), []
+    for path in patches:
+        digest.update(
+            path.name.encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest()
+        )
+        refs.append(f"{APPLIED_REFS}{digest.hexdigest()}")
+    applied = set(
+        git(cache, "for-each-ref", "--format=%(refname)", APPLIED_REFS).split()
+    )
+    reused = next(
+        (count for count in range(len(refs), 0, -1) if refs[count - 1] in applied), 0
+    )
+    print(f"Reusing {reused} of {len(refs)} applied SGLang patches", flush=True)
     # Mirror the helper's init_sglang through patch_stack primitives loaded from the
     # installed checkout (never the PR's code), skipping description() validation:
     # headers gate patch export, not the application of a historical stack under review.
@@ -185,27 +203,55 @@ def init_source(helper, project, source, cache):
         "helper = runpy.run_path(str(entrypoint))\n"
         "ps = importlib.import_module('patch_stack')\n"
         "project = dataclasses.replace(helper['PROJECT'], root=Path(sys.argv.pop(1)))\n"
+        "base, start, reused = sys.argv[1], sys.argv[2], int(sys.argv[3])\n"
         "source = Path(os.environ[project.source_env])\n"
         "stack = [(p, p.read_text().split('diff --git ', 1)[0].strip())\n"
         "         for p in ps.patches(project.patch_dir)]\n"
         "clone = source.with_name(source.name + '.tmp')\n"
         "subprocess.run(['git', 'clone', '--no-checkout', '--', project.git_url,\n"
         "                str(clone)], check=True)\n"
-        "ps.git(clone, 'checkout', '-b', 'baseten-patches', project.pin(), capture=False)\n"
-        "base = ps.git(clone, 'rev-parse', 'HEAD').strip()\n"
-        "ps.apply_stack(clone, stack)\n"
+        "if reused:\n"
+        "    ps.git(clone, 'fetch', '--no-tags', '--update-shallow', 'origin', start,\n"
+        "           capture=False)\n"
+        "    start = 'FETCH_HEAD'\n"
+        "ps.git(clone, 'checkout', '-b', 'baseten-patches', start, capture=False)\n"
+        "ps.apply_stack(clone, stack[reused:])\n"
         "ps.save(project, clone, dict(base=base, version=project.pin(),\n"
         "    exported=ps.git(clone, 'rev-parse', 'HEAD').strip(),\n"
         "    fingerprint=ps.fingerprint(project)))\n"
         "clone.rename(source)\n",
         helper,
         project,
+        base,
+        refs[reused - 1] if reused else base,
+        reused,
         env={
             **os.environ,
             "SGLANG_SOURCE_DIR": str(source),
             "SGLANG_GIT_URL": str(cache),
+            # Global hooks (secret scan, LFS) cost about a second per replayed patch.
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": "/dev/null",
         },
     )
+    commits = git(source, "rev-list", "--reverse", f"{base}..HEAD").split()
+    if len(commits) != len(refs):
+        raise RuntimeError(
+            f"Expected {len(refs)} patch commits in {source}, found {len(commits)}"
+        )
+    if reused < len(refs):
+        git(cache, "fetch", "--no-tags", "--update-shallow", source, "HEAD")
+        git(
+            cache,
+            "update-ref",
+            "--stdin",
+            input="".join(
+                f"create {ref} {commit}\n"
+                for ref, commit in zip(refs[reused:], commits[reused:])
+            ),
+        )
+        git(cache, "pack-refs", "--all")
 
 
 def normalize_legacy_stack(directory):
@@ -283,11 +329,12 @@ def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache)
             validate_patches = runpy.run_path(str(helper.parent / "patch_stack.py"))[
                 "patches"
             ]
+            stacks = []
             for label, project in (("Baseline", before), ("Proposed", after)):
                 try:
                     directory = project / "docker/sglang/patches"
                     normalize_legacy_stack(directory)
-                    validate_patches(directory)
+                    stacks.append(validate_patches(directory))
                 except (ValueError, OSError) as exc:
                     raise RuntimeError(
                         f"{label} SGLang patch stack is invalid: {exc}"
@@ -296,8 +343,8 @@ def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache)
             cache_pin(cache, new_pin)
             print(f"SGLang source comparison: {old_pin} → {new_pin}", flush=True)
             base_source, head_source = scratch / "base-source", scratch / "head-source"
-            init_source(helper, before, base_source, cache)
-            init_source(helper, after, head_source, cache)
+            init_source(helper, before, base_source, cache, old_pin, stacks[0])
+            init_source(helper, after, head_source, cache, new_pin, stacks[1])
             source_head = publish_source(base_source, head_source, source)
             state.update(source_head=source_head, source_revisions=[baseline, head])
             save_state(state_path, state)

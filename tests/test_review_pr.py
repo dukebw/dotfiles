@@ -1,3 +1,4 @@
+import contextlib
 import importlib.machinery
 import importlib.util
 import hashlib
@@ -634,14 +635,21 @@ class ReviewPRTests(unittest.TestCase):
             )
         second_patch.write_text(header + patch.format(before=2, after=4))
         updated_head = self.commit(self.checkout)
-        review.prepare_sglang(
-            self.checkout,
-            self.worktree,
-            baseline,
-            updated_head,
-            state_path,
-            state,
-            cache,
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            review.prepare_sglang(
+                self.checkout,
+                self.worktree,
+                baseline,
+                updated_head,
+                state_path,
+                state,
+                cache,
+            )
+        self.assertIn("Reusing 1 of 1 applied", output.getvalue())
+        self.assertIn("Reusing 1 of 2 applied", output.getvalue())
+        self.assertEqual(
+            len(review.git(cache, "for-each-ref", review.APPLIED_REFS).splitlines()), 4
         )
         self.assertEqual(
             review.git(source, "show", f"{review.BASE_REF}:model.py"), "value = 1"
