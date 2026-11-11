@@ -85,6 +85,30 @@
     }
   },
   "providers": {
+    "baseten-harness": {
+      "models": {
+        "b10-internal/anthropic-claude-fable-5-1": {
+          "compatibility": {
+            "supportsThinkingBlockBinding": true
+          }
+        },
+        "b10-internal/anthropic-claude-fable-5-2-wpzrd9q": {
+          "compatibility": {
+            "supportsThinkingBlockBinding": true
+          }
+        },
+        "b10-internal/anthropic-claude-opus-5-5": {
+          "compatibility": {
+            "supportsThinkingBlockBinding": true
+          }
+        },
+        "b10-internal/anthropic-claude-sonnet-5-5-wpzrd9q": {
+          "compatibility": {
+            "supportsThinkingBlockBinding": true
+          }
+        }
+      }
+    },
     "k3f": {
       "name": "Kimi K3 Flash (dev BIS stack)",
       "package": "@opencode-ai/ai/providers/openai-compatible",
