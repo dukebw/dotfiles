@@ -229,10 +229,13 @@ def init_source(helper, project, source, cache, pin, patches):
             **os.environ,
             "SGLANG_SOURCE_DIR": str(source),
             "SGLANG_GIT_URL": str(cache),
-            # Global hooks (secret scan, LFS) cost about a second per replayed patch.
-            "GIT_CONFIG_COUNT": "1",
+            # Per replayed patch, global hooks (secret scan, LFS) cost about a second
+            # and auto-maintenance detaches another repack; hundreds pile up.
+            "GIT_CONFIG_COUNT": "2",
             "GIT_CONFIG_KEY_0": "core.hooksPath",
             "GIT_CONFIG_VALUE_0": "/dev/null",
+            "GIT_CONFIG_KEY_1": "maintenance.auto",
+            "GIT_CONFIG_VALUE_1": "false",
         },
     )
     commits = git(source, "rev-list", "--reverse", f"{base}..HEAD").split()
