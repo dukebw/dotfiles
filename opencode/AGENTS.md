@@ -80,3 +80,8 @@ platform bootstrap. Its scripts run on this Mac; on a GPU pod, use the `nsys` in
 ## Terminal output
 
 Paste URLs verbatim on their own line, never as markdown links; markdown links are not clickable in my terminal.
+
+## Visuals
+
+Make generated visuals such as HTML pages, diagrams and charts dark mode by default. An explicit request for another
+scheme, or matching an existing document's or product's styling, takes precedence.
