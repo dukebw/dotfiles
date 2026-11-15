@@ -59,6 +59,25 @@
           "execution": 30000
         }
       },
+      "b10-registry": {
+        "type": "local",
+        "command": [
+          "/bin/zsh",
+          "-c",
+          "export BASEBRAIN_REGISTRY_TOKEN=\"$(source ~/.env >/dev/null 2>&1; print -r -- \"$BASEBRAIN_REGISTRY_TOKEN\")\"; exec /opt/homebrew/bin/uv run --directory ~/work/b10-mcp fastmcp run server.py"
+        ],
+        "environment": {
+          "MCP_TOOL_GROUPS": "registry",
+          "ACTION_REGISTRIES": "basebrain=https://basebrain-mcp.internal.basetensors.com",
+          "B10_MCP_REGISTRY_READONLY": "1"
+        },
+        "disabled": false,
+        "timeout": {
+          "startup": 60000,
+          "catalog": 30000,
+          "execution": 30000
+        }
+      },
       "coros": {
         "type": "local",
         "command": [
