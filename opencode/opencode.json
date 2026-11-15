@@ -2,7 +2,8 @@
   "model": "openai/gpt-6.1-sol",
   "$schema": "https://opencode.ai/config.json",
   "experimental": {
-    "todo": true
+    "todo": true,
+    "schedules": true
   },
   "mcp": {
     "servers": {
@@ -19,6 +20,10 @@
       "supabase": {
         "type": "remote",
         "url": "https://mcp.supabase.com/mcp?project_ref=xpxgrxzjjxjfmvdkqosx&features=database"
+      },
+      "granola": {
+        "type": "remote",
+        "url": "https://mcp.granola.ai/mcp"
       },
       "linear": {
         "type": "remote",
@@ -451,9 +456,9 @@
     }
   ],
   "agents": {
-    "build": { "model": "baseten/deepseek-ai/DeepSeek-V4.1-Flash-1017-Fast#max" },
-    "explore": { "model": "baseten/deepseek-ai/DeepSeek-V4.1-Flash-1017-Fast#max" },
-    "general": { "model": "baseten/deepseek-ai/DeepSeek-V4.1-Flash-1017-Fast#max" }
+    "build": { "model": "baseten-harness/b10-internal/anthropic-claude-fable-5-2-wpzrd9q#high" },
+    "explore": { "model": "baseten-harness/b10-internal/anthropic-claude-opus-5-5#medium" },
+    "general": { "model": "baseten-harness/b10-internal/anthropic-claude-opus-5-5#medium" }
   },
   "lsp": {
     "pyright": {
