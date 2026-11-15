@@ -11,6 +11,7 @@
 	pager = delta
 	excludesfile = /Users/brendanduke/.gitignore_global
 	commentChar = ";"
+	hooksPath = /Users/brendanduke/.git-hooks
 [blame]
 	pager = delta
 [interactive]
@@ -27,6 +28,9 @@
 	conflictstyle = diff3
 [pull]
 	rebase = false
+[maintenance]
+	# Detached auto-maintenance stacks one repack per commit under rapid commits (seen on Git 2.54).
+	autoDetach = false
 [url "git@github.com:"]
 	insteadOf = https://github.com/
 [includeIf "gitdir:~/work/"]
