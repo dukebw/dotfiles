@@ -130,6 +130,28 @@
           "compatibility": {
             "supportsThinkingBlockBinding": true
           }
+        },
+        "moonshotai/Kimi-K3.1-Pro": {
+          "modelID": "moonshotai/kimi-k3-1-pro--baseten",
+          "name": "Kimi K3.1 Pro",
+          "family": "kimi-k3",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content"
+          },
+          "limit": {
+            "context": 1048576,
+            "output": 262144
+          },
+          "variants": [
+            { "id": "low", "settings": { "reasoningEffort": "low" } },
+            { "id": "high", "settings": { "reasoningEffort": "high" } },
+            { "id": "max", "settings": { "reasoningEffort": "max" } }
+          ]
         }
       }
     },
