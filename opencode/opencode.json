@@ -1,5 +1,5 @@
 {
-  "model": "openai/gpt-6.1-sol",
+  "model": "baseten-harness/moonshotai/kimi-k3-1-pro--baseten",
   "$schema": "https://opencode.ai/config.json",
   "experimental": {
     "todo": true,
@@ -111,47 +111,25 @@
   "providers": {
     "baseten-harness": {
       "models": {
-        "b10-internal/anthropic-claude-fable-5-1": {
+        "anthropic/claude-fable-5-1--anthropic": {
           "compatibility": {
             "supportsThinkingBlockBinding": true
           }
         },
-        "b10-internal/anthropic-claude-fable-5-2-wpzrd9q": {
+        "anthropic/claude-fable-5-2--anthropic": {
           "compatibility": {
             "supportsThinkingBlockBinding": true
           }
         },
-        "b10-internal/anthropic-claude-opus-5-5": {
+        "anthropic/claude-opus-5-5--anthropic": {
           "compatibility": {
             "supportsThinkingBlockBinding": true
           }
         },
-        "b10-internal/anthropic-claude-sonnet-5-5-wpzrd9q": {
+        "anthropic/claude-sonnet-5-5--anthropic": {
           "compatibility": {
             "supportsThinkingBlockBinding": true
           }
-        },
-        "moonshotai/Kimi-K3.1-Pro": {
-          "modelID": "moonshotai/kimi-k3-1-pro--baseten",
-          "name": "Kimi K3.1 Pro",
-          "family": "kimi-k3",
-          "capabilities": {
-            "tools": true,
-            "input": ["text", "image"],
-            "output": ["text"]
-          },
-          "compatibility": {
-            "reasoningField": "reasoning_content"
-          },
-          "limit": {
-            "context": 1048576,
-            "output": 262144
-          },
-          "variants": [
-            { "id": "low", "settings": { "reasoningEffort": "low" } },
-            { "id": "high", "settings": { "reasoningEffort": "high" } },
-            { "id": "max", "settings": { "reasoningEffort": "max" } }
-          ]
         }
       }
     },
@@ -497,9 +475,9 @@
     }
   ],
   "agents": {
-    "build": { "model": "baseten-harness/b10-internal/anthropic-claude-fable-5-2-wpzrd9q#medium" },
-    "explore": { "model": "baseten-harness/b10-internal/anthropic-claude-opus-5-5#medium" },
-    "general": { "model": "baseten-harness/b10-internal/anthropic-claude-opus-5-5#medium" }
+    "build": { "model": "baseten-harness/moonshotai/kimi-k3-1-pro--baseten" },
+    "explore": { "model": "baseten-harness/moonshotai/kimi-k3-1-pro--baseten" },
+    "general": { "model": "baseten-harness/moonshotai/kimi-k3-1-pro--baseten" }
   },
   "lsp": {
     "pyright": {
