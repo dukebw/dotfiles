@@ -110,6 +110,7 @@
   },
   "providers": {
     "baseten-harness": {
+      "name": "Baseten Grid",
       "models": {
         "anthropic/claude-fable-5-1--anthropic": {
           "compatibility": {
