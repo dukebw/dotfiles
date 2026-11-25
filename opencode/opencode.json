@@ -1,6 +1,9 @@
 {
   "model": "baseten-harness/moonshotai/kimi-k3-1-pro--baseten",
   "$schema": "https://opencode.ai/config.json",
+  "policies": [
+    { "action": "skill.use", "resource": "pr-review", "effect": "deny" }
+  ],
   "experimental": {
     "todo": true,
     "schedules": true
