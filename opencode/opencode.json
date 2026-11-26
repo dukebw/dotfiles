@@ -9,6 +9,7 @@
     { "action": "skill.use", "resource": "stack-pr", "effect": "allow" },
     { "action": "skill.use", "resource": "address-pr-review-comments", "effect": "allow" },
     { "action": "skill.use", "resource": "moon", "effect": "allow" },
+    { "action": "skill.use", "resource": "sglang-development", "effect": "allow" },
     { "action": "skill.use", "resource": "chinese-vocab", "effect": "allow" },
     { "action": "skill.use", "resource": "anki-connect", "effect": "allow" },
     { "action": "mcp.use", "resource": "*", "effect": "deny" },
