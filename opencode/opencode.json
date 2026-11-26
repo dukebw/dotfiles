@@ -2,7 +2,16 @@
   "model": "baseten-harness/moonshotai/kimi-k3-1-pro--baseten",
   "$schema": "https://opencode.ai/config.json",
   "policies": [
-    { "action": "skill.use", "resource": "pr-review", "effect": "deny" }
+    { "action": "skill.use", "resource": "*", "effect": "deny" },
+    { "action": "skill.use", "resource": "opencode", "effect": "allow" },
+    { "action": "skill.use", "resource": "report", "effect": "allow" },
+    { "action": "skill.use", "resource": "browser", "effect": "allow" },
+    { "action": "skill.use", "resource": "stack-pr", "effect": "allow" },
+    { "action": "skill.use", "resource": "address-pr-review-comments", "effect": "allow" },
+    { "action": "skill.use", "resource": "pr", "effect": "allow" },
+    { "action": "skill.use", "resource": "moon", "effect": "allow" },
+    { "action": "skill.use", "resource": "chinese-vocab", "effect": "allow" },
+    { "action": "skill.use", "resource": "anki-connect", "effect": "allow" }
   ],
   "experimental": {
     "todo": true,

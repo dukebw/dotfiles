@@ -2,6 +2,8 @@
 name: anki-connect
 description: Add cloze or basic notes to Anki through the local AnkiConnect HTTP API with deck/model/field preflight checks. Use when adding Anki cards, using AnkiConnect, validating Anki deck/model fields, or when another skill has already produced card front/back content.
 argument-hint: "[--dry-run] [deck] [model]"
+metadata:
+  opencode/autoinvoke: false
 ---
 
 # AnkiConnect
