@@ -10,7 +10,17 @@
     { "action": "skill.use", "resource": "address-pr-review-comments", "effect": "allow" },
     { "action": "skill.use", "resource": "moon", "effect": "allow" },
     { "action": "skill.use", "resource": "chinese-vocab", "effect": "allow" },
-    { "action": "skill.use", "resource": "anki-connect", "effect": "allow" }
+    { "action": "skill.use", "resource": "anki-connect", "effect": "allow" },
+    { "action": "mcp.use", "resource": "*", "effect": "deny" },
+    { "action": "mcp.use", "resource": "b10-registry", "effect": "allow" },
+    { "action": "mcp.use", "resource": "baseten-internal-mcp", "effect": "allow" },
+    { "action": "mcp.use", "resource": "coros", "effect": "allow" },
+    { "action": "mcp.use", "resource": "granola", "effect": "allow" },
+    { "action": "mcp.use", "resource": "honeycomb", "effect": "allow" },
+    { "action": "mcp.use", "resource": "linear", "effect": "allow" },
+    { "action": "mcp.use", "resource": "notion", "effect": "allow" },
+    { "action": "mcp.use", "resource": "slack", "effect": "allow" },
+    { "action": "mcp.use", "resource": "supabase", "effect": "allow" }
   ],
   "experimental": {
     "todo": true,
@@ -25,14 +35,17 @@
         "disabled": false
       },
       "honeycomb": {
+        "disabled": true,
         "type": "remote",
         "url": "https://mcp.honeycomb.io/mcp"
       },
       "supabase": {
+        "disabled": true,
         "type": "remote",
         "url": "https://mcp.supabase.com/mcp?project_ref=xpxgrxzjjxjfmvdkqosx&features=database"
       },
       "granola": {
+        "disabled": true,
         "type": "remote",
         "url": "https://mcp.granola.ai/mcp"
       },
