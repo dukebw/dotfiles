@@ -22,25 +22,11 @@ Billip session credentials unless Brendan explicitly approves Billip access for 
 unblock an investigation, explain what specific data is needed and ask first; prefer non-Billip APIs or owner-provided
 configuration when available.
 
-## Kubernetes cluster access
-
-Reach clusters through the rcli Tailscale provider, not Rancher. Agents cannot run `rcli sync` (it refuses inside agent
-sessions), but its kubeconfigs are already on disk: list clusters with `rcli list -p tailscale`. Read with
-`--kubeconfig ~/.rcli/kubeconfig/tailscale-readonly/<cluster>.yaml`, whose production contexts are named
-`<cluster>-readonly`; use `--kubeconfig ~/.rcli/kubeconfig/tailscale/<cluster>.yaml --context <cluster>` only when the
-task writes. Pass the kubeconfig and context on every `kubectl` command (Helm takes `--kube-context`). Don't use
-`rcli select --kubectl`; it switches my current context, which the dev-pod tooling reads. If a cluster is missing from
-the inventory, ask me to run `rcli sync -p tailscale` in my terminal.
-
 ## Baseten deployment naming
 
-Every Kubernetes or Helm deployment created for Brendan on a Baseten cluster must use a short base name containing the
-exact contiguous segment `-debugging-brendanduke` before any controller-generated suffixes. After creation, verify that
-every generated pod name contains both `debugging` and `brendanduke`; if Grove or Kubernetes truncation removes either
-token, rename and recreate the deployment before proceeding.
-
-Exception: a Baseten model deployment created through the management API, whose pods MCM names `bt-llm-<hash>-…`,
-carries the segment in its deployment display name only; skip the pod-name check.
+For Brendan's Kubernetes or Helm deployments on Baseten, include `-debugging-brendanduke` in the short base name.
+Check every generated pod name; rename and recreate if truncation drops `debugging` or `brendanduke`.
+For management-API model deployments, use the segment in the display name only.
 
 ## Git workspace policy
 

@@ -28,11 +28,12 @@ FLASHINFER_PATHS = (
     PROJECT / "docker/flashinfer",
     PROJECT / "docker/flashinfer_nvfp4_adapter.patch",
     PROJECT / "docker/gpu.sglang.Dockerfile",
+    PROJECT / "versions/flashinfer.env",
 )
 BASE_REF = "refs/pr-review/base"
 HEAD_REF = "refs/pr-review/head"
 APPLIED_REFS = "refs/applied/"
-REVIEW_MODEL = "openai/gpt-6-astra#xhigh"
+REVIEW_MODEL = "openai/gpt-6.2-astra#xhigh"
 
 
 def run(*args, cwd=None, env=None, input=None):
@@ -355,6 +356,38 @@ def prepare_sglang(checkout, worktree, baseline, head, state_path, state, cache)
 
 
 def flashinfer_stack(checkout, revision):
+    pin_path = PROJECT / "versions/flashinfer.env"
+    pin = subprocess.run(
+        ["git", "-C", str(checkout), "show", f"{revision}:{pin_path}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if pin.returncode == 0:
+        versions = set(
+            re.findall(r"^FLASHINFER_VERSION=([\w.+-]+)$", pin.stdout, re.M)
+        )
+        if len(versions) != 1:
+            raise RuntimeError(
+                f"Expected one FLASHINFER_VERSION in {revision}:versions/flashinfer.env"
+            )
+        patch_dir = PROJECT / "docker/flashinfer/patches"
+        series = git(checkout, "show", f"{revision}:{patch_dir}/series")
+        names = set()
+        patches = []
+        for line in series.splitlines():
+            name = line.strip()
+            if not name or name.startswith("#"):
+                continue
+            if not re.fullmatch(r"[a-z][a-z0-9_]*\.patch", name):
+                raise RuntimeError(f"Invalid FlashInfer patch filename: {name}")
+            if name in names:
+                raise RuntimeError(f"Duplicate FlashInfer patch in series: {name}")
+            names.add(name)
+            text = git(checkout, "show", f"{revision}:{patch_dir / name}")
+            patches.append((name, text))
+        return versions.pop(), patches
+
     dockerfile = git(
         checkout, "show", f"{revision}:{PROJECT}/docker/gpu.sglang.Dockerfile"
     )

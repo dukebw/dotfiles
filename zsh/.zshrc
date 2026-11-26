@@ -167,6 +167,9 @@ export EDITOR=nvim
 # fd alias (hidden files)
 alias fdh="fd --hidden --no-ignore"
 export PATH="$HOME/.local/bin:$PATH"
+if command -v omp >/dev/null 2>&1; then
+  eval "$(omp completions zsh)"
+fi
 
 # Remote log runner wrapper.
 r() {
@@ -221,3 +224,7 @@ opencode() {
   fi
   command opencode run "${args[@]}"
 }
+
+# proto
+export PROTO_HOME="$HOME/.proto";
+export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH";
