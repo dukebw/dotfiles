@@ -1,6 +1,7 @@
 {
   "model": "baseten-harness/moonshotai/kimi-k3-1-pro--baseten",
   "$schema": "https://opencode.ai/config.json",
+  "skills": ["~/work/baseten/mp/devenv/.claude/skills/gpu-reservation-api"],
   "policies": [
     { "action": "skill.use", "resource": "*", "effect": "deny" },
     { "action": "skill.use", "resource": "opencode", "effect": "allow" },
@@ -10,6 +11,8 @@
     { "action": "skill.use", "resource": "address-pr-review-comments", "effect": "allow" },
     { "action": "skill.use", "resource": "moon", "effect": "allow" },
     { "action": "skill.use", "resource": "sglang-development", "effect": "allow" },
+    { "action": "skill.use", "resource": "gpu-reservation-api", "effect": "allow" },
+    { "action": "skill.use", "resource": "mutagen-remote-workflow", "effect": "allow" },
     { "action": "skill.use", "resource": "chinese-vocab", "effect": "allow" },
     { "action": "skill.use", "resource": "anki-connect", "effect": "allow" },
     { "action": "mcp.use", "resource": "*", "effect": "deny" },
